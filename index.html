@@ -903,15 +903,9 @@ async function pullFiling() {
     var is10K = filingInfo.form.indexOf("10-K") >= 0 || filingInfo.form.indexOf("20-F") >= 0;
     log("Found " + filingInfo.form + " filed " + filingInfo.date + (filingInfo.fb ? " (fallback)" : ""), "ok");
 
-    // Step 3: Fetch XBRL company facts (structured JSON, ~300KB)
-    log("Fetching XBRL data...", "info");
-    var r3 = await secGet("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json");
-    var xbrl = await r3.json();
-    log("XBRL data loaded (" + Object.keys(xbrl.facts || {}).length + " taxonomies)", "ok");
-
-    // Step 4: Extract financials from XBRL
-    log("Extracting financials...", "info");
-    var fins = extractFromXBRL(xbrl, filingInfo.date, is10K);
+    // Step 3: Fetch individual XBRL concepts (small requests, ~10KB each)
+    log("Fetching financials...", "info");
+    var fins = await fetchXBRLConcepts(cik, filingInfo.date, is10K);
     fins._form = filingInfo.form;
     fins._scale = 1; // XBRL values are in raw dollars
     fins._tables = 0;
@@ -950,6 +944,134 @@ async function pullFiling() {
 
   } catch(e) { log("Error: " + e.message, "err"); }
   finally { btn.disabled = false; btn.textContent = "\u23CE PULL FROM EDGAR"; }
+}
+
+
+async function fetchXBRLConcepts(cik, filingDate, is10K) {
+  var filingYear = parseInt(filingDate.substring(0, 4));
+  var r = {};
+
+  // Define concepts to fetch grouped by what they provide
+  var concepts = [
+    // Revenue
+    {field: "revenue", names: ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet"]},
+    // Net Income
+    {field: "net_income", names: ["NetIncomeLoss", "ProfitLoss"]},
+    // Operating Income  
+    {field: "operating_income", names: ["OperatingIncomeLoss"]},
+    // Cash Flow
+    {field: "operating_cf", names: ["NetCashProvidedByOperatingActivities"]},
+    {field: "capex", names: ["PaymentsToAcquirePropertyPlantAndEquipment"], abs: true},
+    {field: "depreciation", names: ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"]},
+    // Balance Sheet
+    {field: "cash", names: ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"], instant: true},
+    {field: "long_term_debt", names: ["LongTermDebt", "LongTermDebtNoncurrent"], instant: true},
+    {field: "stockholders_equity", names: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"], instant: true},
+    {field: "total_assets", names: ["Assets"], instant: true},
+    // Per Share & Shares
+    {field: "eps_diluted", names: ["EarningsPerShareDiluted"], perShare: true},
+    {field: "shares_diluted", names: ["WeightedAverageNumberOfDilutedSharesOutstanding", "EntityCommonStockSharesOutstanding"], shares: true}
+  ];
+
+  for (var ci = 0; ci < concepts.length; ci++) {
+    var concept = concepts[ci];
+    if (r[concept.field]) continue; // already found
+    
+    for (var ni = 0; ni < concept.names.length; ni++) {
+      if (r[concept.field]) break;
+      try {
+        var url = "https://data.sec.gov/api/xbrl/companyconcept/CIK" + cik + "/us-gaap/" + concept.names[ni] + ".json";
+        var resp = await secGet(url);
+        var data = await resp.json();
+        var units = data.units || {};
+        var values = units.USD || units.shares || units["USD/shares"] || units.pure || [];
+        if (!values || !values.length) continue;
+
+        if (concept.instant) {
+          // Balance sheet: get most recent instant value
+          var best = null, bestDate = "";
+          for (var vi = 0; vi < values.length; vi++) {
+            var v = values[vi];
+            if (!v.end) continue;
+            var ey = parseInt(v.end.substring(0, 4));
+            if (ey < filingYear - 1) continue;
+            // Prefer instant (no start) or very short period
+            var isInst = !v.start || v.start === "";
+            if (!isInst) {
+              var sd = new Date(v.start), ed = new Date(v.end);
+              var months = Math.round((ed - sd) / (30.44 * 86400000));
+              if (months > 2) continue;
+            }
+            if (v.end > bestDate) { best = v.val; bestDate = v.end; }
+          }
+          if (best !== null) r[concept.field] = best;
+        } else if (concept.perShare) {
+          // EPS: get most recent annual
+          var best = null, bestDate = "";
+          for (var vi = 0; vi < values.length; vi++) {
+            var v = values[vi];
+            if (!v.end || !v.start) continue;
+            var ey = parseInt(v.end.substring(0, 4));
+            if (ey < filingYear - 1) continue;
+            var sd = new Date(v.start), ed = new Date(v.end);
+            var months = Math.round((ed - sd) / (30.44 * 86400000));
+            if (months >= 10 && months <= 14 && v.end > bestDate) { best = v.val; bestDate = v.end; }
+          }
+          if (best !== null) r[concept.field] = best;
+        } else if (concept.shares) {
+          // Shares: get most recent value
+          var best = null, bestDate = "";
+          for (var vi = 0; vi < values.length; vi++) {
+            var v = values[vi];
+            if (!v.end) continue;
+            var ey = parseInt(v.end.substring(0, 4));
+            if (ey < filingYear - 1) continue;
+            if (v.end > bestDate) { best = v.val; bestDate = v.end; }
+          }
+          if (best !== null) r[concept.field] = best;
+        } else {
+          // Income/CF: get most recent ~12 month period
+          var best = null, bestDate = "";
+          var priorVal = null, priorDate = "";
+          for (var vi = 0; vi < values.length; vi++) {
+            var v = values[vi];
+            if (!v.end || !v.start) continue;
+            var ey = parseInt(v.end.substring(0, 4));
+            if (ey < filingYear - 2) continue;
+            var sd = new Date(v.start), ed = new Date(v.end);
+            var months = Math.round((ed - sd) / (30.44 * 86400000));
+            if (months >= 10 && months <= 14) {
+              if (v.end > bestDate) {
+                // Shift current best to prior
+                if (best !== null) { priorVal = best; priorDate = bestDate; }
+                best = v.val; bestDate = v.end;
+              } else if (v.end > priorDate) {
+                priorVal = v.val; priorDate = v.end;
+              }
+            }
+          }
+          if (best !== null) {
+            r[concept.field] = concept.abs ? Math.abs(best) : best;
+            // Save prior year revenue for trailing growth
+            if (concept.field === "revenue" && priorVal !== null) {
+              r.revenue_prior = priorVal;
+            }
+          }
+        }
+      } catch(e) {
+        // Concept not found for this company, try next name
+        continue;
+      }
+    }
+    // Show progress
+    if (ci % 4 === 0) log("  " + (ci + 1) + "/" + concepts.length + " concepts...", "info");
+  }
+
+  // Derived
+  if (r.operating_cf && r.capex) r.fcf = r.operating_cf - r.capex;
+  else if (r.operating_cf) { r.capex = 0; r.fcf = r.operating_cf; }
+
+  return r;
 }
 
 function extractFromXBRL(xbrl, filingDate, is10K) {
