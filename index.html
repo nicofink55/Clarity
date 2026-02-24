@@ -194,8 +194,8 @@ function detectSector(fullText) {
 // ── Labels for field extraction ──
 var LABELS = {
   rev: ["total revenue","total revenues","net revenue","total net revenue","net sales","total net sales","revenues","total net revenues","net interest income","revenue"],
-  ni: ["net income","net earnings","net income (loss)","net income attributable"],
-  oi: ["operating income","income from operations","operating profit"],
+  ni: ["net income","net earnings","net income (loss)","net income attributable","net loss","net loss attributable"],
+  oi: ["operating income","income from operations","operating profit","income / (loss) from operations","loss from operations"],
   gp: ["gross profit"],
   ta: ["total assets"],
   cash: ["cash and cash equivalents","cash and equivalents","cash, cash equivalents"],
@@ -323,7 +323,7 @@ function extractFinancials(allTables, scale, is10q, fullText) {
   for (const table of allTables) {
     if (!table || table.length < 3) continue;
     const tt = table.flat().map(c => String(c || "")).join(" ").toLowerCase();
-    const hasNI = tt.includes("net income") || tt.includes("net earnings");
+    const hasNI = tt.includes("net income") || tt.includes("net earnings") || tt.includes("net loss");
     if (isLikelyIS(table, tt) && hasNI && is10q) {
       const [, ann] = detectPeriod(table, fullText, is10q);
       if (ann < bestISAnn) { bestIS = table; bestISAnn = ann; }
@@ -343,7 +343,7 @@ function extractFinancials(allTables, scale, is10q, fullText) {
       if (bigCount >= 3) effScale = 1;
     }
     const hasRev = isLikelyIS(table, tt);
-    const hasNI = tt.includes("net income") || tt.includes("net earnings");
+    const hasNI = tt.includes("net income") || tt.includes("net earnings") || tt.includes("net loss");
 
     if (hasRev && hasNI) {
       if (is10q && bestIS !== null && table !== bestIS) continue;
@@ -363,7 +363,7 @@ function extractFinancials(allTables, scale, is10q, fullText) {
         }
       }
       if (!("eps_diluted" in r)) {
-        let v = findValue(table, ["diluted earnings per","diluted net income per","earnings per common share"], col);
+        let v = findValue(table, ["diluted earnings per","diluted net income per","earnings per common share","diluted loss per","basic and diluted loss per","net loss per"], col);
         if (v === null) {
           for (const row of table) {
             if (!row) continue;
@@ -437,7 +437,7 @@ function extractFinancials(allTables, scale, is10q, fullText) {
       const start = Math.max(0, m.index - 250);
       const end = Math.min(ftl.length, m.index + m[0].length + 250);
       const window = ftl.slice(start, end);
-      if (["loan","debt","principal","option","warrant","rsu","preferred"].some(x => window.includes(x))) continue;
+      if (["loan","debt","principal","option","warrant","rsu","preferred","authorized"].some(x => window.includes(x))) continue;
       if (!["common","share","class a","class b","class c","registrant"].some(x => window.includes(x))) continue;
       const nums = [...window.matchAll(/[\d,]{7,}/g)];
       for (const n of nums) {
@@ -846,21 +846,6 @@ async function secGet(url) {
   throw new Error("Proxy failed for: " + url.substring(0, 60));
 }
 
-async function secGetLarge(url) {
-  // Large filings: allorigins first (higher size limit), then corsproxy
-  log("Downloading via proxy (large file)...", "info");
-  try {
-    var r = await fetch(PROXY2 + encodeURIComponent(url));
-    if (r.ok) return r;
-    log("Proxy 1 returned " + r.status + ", trying backup...", "warn");
-  } catch(e) { log("Proxy 1 failed, trying backup...", "warn"); }
-  try {
-    var r2 = await fetch(PROXY + encodeURIComponent(url));
-    if (r2.ok) return r2;
-  } catch(e) {}
-  throw new Error("Filing too large for free proxies. Use manual file upload, or set up Cloudflare Worker.");
-}
-
 async function proxyFetch(url) {
   try {
     var r = await fetch(PROXY + encodeURIComponent(url));
@@ -880,6 +865,7 @@ async function pullFiling() {
   btn.disabled = true; btn.textContent = "PULLING...";
   log("Starting pull for " + ticker + "...", "info");
   try {
+    // Step 1: Look up CIK
     log("Looking up " + ticker + "...", "info");
     var r1 = await secGet("https://www.sec.gov/files/company_tickers.json");
     var tickers = await r1.json();
@@ -893,50 +879,253 @@ async function pullFiling() {
     }
     if (!cik) throw new Error("Ticker not found in SEC");
     log("CIK " + cik + " \u2014 " + name, "ok");
-    
+
+    // Step 2: Get filing metadata to determine form type and date
     var formType = document.getElementById("formType").value;
     log("Searching for " + formType + "...", "info");
     var r2 = await secGet("https://data.sec.gov/submissions/CIK" + cik + ".json");
-    var data = await r2.json();
-    var rec = (data.filings || {}).recent || {};
+    var subData = await r2.json();
+    var rec = (subData.filings || {}).recent || {};
     var forms = rec.form || [], dates = rec.filingDate || [];
-    var accs = rec.accessionNumber || [], docs = rec.primaryDocument || [];
-    var info = null;
+    var filingInfo = null;
     var targets = [formType, formType + "/A"];
-    for (var ti = 0; ti < targets.length && !info; ti++)
+    for (var ti = 0; ti < targets.length && !filingInfo; ti++)
       for (var i = 0; i < forms.length; i++)
-        if (forms[i] === targets[ti]) { info = {form:forms[i],date:dates[i],acc:accs[i],doc:docs[i],cik:cik}; break; }
-    if (!info) {
+        if (forms[i] === targets[ti]) { filingInfo = {form: forms[i], date: dates[i]}; break; }
+    if (!filingInfo) {
       var alt = formType === "10-Q" ? "10-K" : "10-Q";
       targets = [alt, alt + "/A"];
-      for (var ti = 0; ti < targets.length && !info; ti++)
+      for (var ti = 0; ti < targets.length && !filingInfo; ti++)
         for (var i = 0; i < forms.length; i++)
-          if (forms[i] === targets[ti]) { info = {form:forms[i],date:dates[i],acc:accs[i],doc:docs[i],cik:cik,fb:true}; break; }
+          if (forms[i] === targets[ti]) { filingInfo = {form: forms[i], date: dates[i], fb: true}; break; }
     }
-    if (!info) throw new Error("No filing found");
-    log("Found " + info.form + " filed " + info.date + (info.fb ? " (fallback)" : ""), "ok");
-    
-    log("Downloading...", "info");
-    var accFlat = info.acc.replace(/-/g, ""), cikC = info.cik.replace(/^0+/, "");
-    var url = "https://www.sec.gov/Archives/edgar/data/" + cikC + "/" + accFlat + "/" + info.doc;
-    var r3 = await secGetLarge(url);
-    var html = await r3.text();
-    log("Downloaded " + Math.round(html.length / 1024) + "KB", "ok");
-    
-    var fn = info.form.replace("/", "-") + "_" + info.date + ".htm";
-    loadContent(html, fn);
+    if (!filingInfo) throw new Error("No filing found");
+    var is10K = filingInfo.form.indexOf("10-K") >= 0 || filingInfo.form.indexOf("20-F") >= 0;
+    log("Found " + filingInfo.form + " filed " + filingInfo.date + (filingInfo.fb ? " (fallback)" : ""), "ok");
+
+    // Step 3: Fetch XBRL company facts (structured JSON, ~300KB)
+    log("Fetching XBRL data...", "info");
+    var r3 = await secGet("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json");
+    var xbrl = await r3.json();
+    log("XBRL data loaded (" + Object.keys(xbrl.facts || {}).length + " taxonomies)", "ok");
+
+    // Step 4: Extract financials from XBRL
+    log("Extracting financials...", "info");
+    var fins = extractFromXBRL(xbrl, filingInfo.date, is10K);
+    fins._form = filingInfo.form;
+    fins._scale = 1; // XBRL values are in raw dollars
+    fins._tables = 0;
+
+    // Detect sector from company name and SIC code
+    var sic = subData.sic || "";
+    var sicDesc = subData.sicDescription || "";
+    var sectorResult = detectSectorFromSIC(sic, sicDesc, name);
+    fins._sector = sectorResult[0];
+    fins._sector_confidence = sectorResult[1];
+
+    var fields = Object.keys(fins).filter(function(k) { return k.charAt(0) !== "_"; }).length;
+    currentFins = fins;
+
+    document.getElementById("parseStatus").className = "st ok";
+    document.getElementById("parseStatus").textContent = "\u2713 " + fins._form + " | " + (SECTOR_NAMES[fins._sector] || "General") + " | " + fields + " fields (XBRL)";
+    document.getElementById("inputsCard").style.display = "";
+    if (fins.shares_diluted && !document.getElementById("shares").value)
+      document.getElementById("shares").value = (fins.shares_diluted / 1e6).toFixed(1);
+    document.getElementById("sector").value = "auto";
+    log("Extracted " + fields + " fields | " + (SECTOR_NAMES[fins._sector] || "General") + " | " + filingInfo.form, "ok");
+
+    // Step 5: Fetch market data
     await fetchMarket(ticker);
-    
+
+    // Save recent
     recents = recents.filter(function(r) { return r !== ticker; });
     recents.unshift(ticker); recents = recents.slice(0, 8);
     localStorage.setItem("cl_rec", JSON.stringify(recents));
     renderRecents();
-    
+
+    // Auto-run DCF
     var p = parseFloat(document.getElementById("price").value);
     var s = parseFloat(document.getElementById("shares").value);
     if (p > 0 && s > 0) runDCFUI();
+
   } catch(e) { log("Error: " + e.message, "err"); }
   finally { btn.disabled = false; btn.textContent = "\u23CE PULL FROM EDGAR"; }
+}
+
+function extractFromXBRL(xbrl, filingDate, is10K) {
+  var facts = xbrl.facts || {};
+  var gaap = facts["us-gaap"] || {};
+  var dei = facts["dei"] || {};
+  var r = {};
+
+  // Filing year from date
+  var filingYear = parseInt(filingDate.substring(0, 4));
+
+  // Helper: get most recent annual or quarterly value for a concept
+  function getVal(conceptNames, preferAnnual) {
+    for (var ci = 0; ci < conceptNames.length; ci++) {
+      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
+      if (!concept) continue;
+      var units = concept.units || {};
+      var values = units.USD || units.shares || units["USD/shares"] || units.pure || [];
+      if (!values.length) continue;
+
+      // Filter to recent filings and sort by end date
+      var recent = [];
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi];
+        if (!v.end) continue;
+        var endYear = parseInt(v.end.substring(0, 4));
+        if (endYear < filingYear - 1) continue; // only recent
+        // For annual: want ~12 month periods (or instant for BS)
+        // For quarterly: want ~3 month periods
+        var startDate = v.start;
+        var months = 0;
+        if (startDate) {
+          var sd = new Date(startDate), ed = new Date(v.end);
+          months = Math.round((ed - sd) / (30.44 * 24 * 60 * 60 * 1000));
+        }
+        recent.push({val: v.val, end: v.end, start: v.start || "", months: months, filed: v.filed || "", form: v.form || ""});
+      }
+
+      // Sort by end date descending
+      recent.sort(function(a, b) { return b.end.localeCompare(a.end); });
+
+      if (preferAnnual) {
+        // Want ~12 month period (10-12 months) or instant (BS items)
+        for (var ri = 0; ri < recent.length; ri++) {
+          if (recent[ri].months >= 10 && recent[ri].months <= 14) return recent[ri].val;
+          if (recent[ri].months === 0 && !recent[ri].start) return recent[ri].val; // instant (BS)
+        }
+        // Fallback: just take most recent
+        if (recent.length) return recent[0].val;
+      } else {
+        // Most recent value
+        if (recent.length) return recent[0].val;
+      }
+    }
+    return null;
+  }
+
+  // Helper for balance sheet items (instant, no period)
+  function getInstant(conceptNames) {
+    for (var ci = 0; ci < conceptNames.length; ci++) {
+      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
+      if (!concept) continue;
+      var units = concept.units || {};
+      var values = units.USD || [];
+      if (!values.length) continue;
+      var recent = [];
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi];
+        if (!v.end) continue;
+        if (!v.start || v.start === "") recent.push({val: v.val, end: v.end}); // instant
+        else {
+          var sd2 = new Date(v.start), ed2 = new Date(v.end);
+          var m2 = Math.round((ed2 - sd2) / (30.44 * 24 * 60 * 60 * 1000));
+          if (m2 < 2) recent.push({val: v.val, end: v.end}); // near-instant
+        }
+      }
+      recent.sort(function(a, b) { return b.end.localeCompare(a.end); });
+      if (recent.length) return recent[0].val;
+    }
+    return null;
+  }
+
+  // Income statement (annual preferred)
+  var rev = getVal(["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTaxNew", "InterestIncomeExpenseNet", "TotalRevenuesAndOtherIncome", "NetRevenuesIncludingNetInterestIncome"], true);
+  if (rev) r.revenue = rev;
+
+  var ni = getVal(["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"], true);
+  if (ni) r.net_income = ni;
+
+  var oi = getVal(["OperatingIncomeLoss", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes"], true);
+  if (oi) r.operating_income = oi;
+
+  var gp = getVal(["GrossProfit"], true);
+  if (gp) r.gross_profit = gp;
+
+  // Cash flow (annual)
+  var ocf = getVal(["NetCashProvidedByOperatingActivities", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect"], true);
+  if (ocf) r.operating_cf = ocf;
+
+  var capex = getVal(["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets", "CapitalExpendituresIncurredButNotYetPaid"], true);
+  if (capex) r.capex = Math.abs(capex);
+
+  var da = getVal(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "Depreciation"], true);
+  if (da) r.depreciation = da;
+
+  // Balance sheet (instant values)
+  var cash = getInstant(["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments", "Cash"]);
+  if (cash) r.cash = cash;
+
+  var debt = getInstant(["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]);
+  if (debt) r.long_term_debt = debt;
+
+  var eq = getInstant(["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]);
+  if (eq) r.stockholders_equity = eq;
+
+  var ta = getInstant(["Assets"]);
+  if (ta) r.total_assets = ta;
+
+  var tl = getInstant(["Liabilities"]);
+  if (tl) r.total_liabilities = tl;
+
+  // Per share
+  var eps = getVal(["EarningsPerShareDiluted"], true);
+  if (eps) r.eps_diluted = eps;
+
+  // Shares
+  var shares = getVal(["WeightedAverageNumberOfDilutedSharesOutstanding", "CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"], true);
+  if (!shares) shares = getInstant(["CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"]);
+  if (shares) r.shares_diluted = shares;
+
+  // Derived
+  if (r.operating_cf && r.capex) r.fcf = r.operating_cf - r.capex;
+  else if (r.operating_cf) { r.capex = 0; r.fcf = r.operating_cf; }
+
+  // Prior year revenue for trailing growth
+  // Look for revenue from ~12 months before the most recent
+  if (r.revenue) {
+    var revConcepts = ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "InterestIncomeExpenseNet"];
+    for (var ci = 0; ci < revConcepts.length; ci++) {
+      var concept = gaap[revConcepts[ci]];
+      if (!concept) continue;
+      var values = (concept.units || {}).USD || [];
+      var annuals = [];
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi];
+        if (!v.start || !v.end) continue;
+        var sd3 = new Date(v.start), ed3 = new Date(v.end);
+        var m3 = Math.round((ed3 - sd3) / (30.44 * 24 * 60 * 60 * 1000));
+        if (m3 >= 10 && m3 <= 14) annuals.push({val: v.val, end: v.end});
+      }
+      annuals.sort(function(a, b) { return b.end.localeCompare(a.end); });
+      if (annuals.length >= 2) {
+        r.revenue_prior = annuals[1].val;
+        break;
+      }
+    }
+  }
+
+  return r;
+}
+
+function detectSectorFromSIC(sic, sicDesc, companyName) {
+  var s = (sic + " " + sicDesc + " " + companyName).toLowerCase();
+  if (sic >= "6020" && sic <= "6099" || s.indexOf("bank") >= 0 || s.indexOf("depository") >= 0) return ["bank", "high"];
+  if (sic >= "6311" && sic <= "6399" || s.indexOf("insurance") >= 0) return ["insurance", "high"];
+  if (sic >= "4911" && sic <= "4941" || s.indexOf("electric") >= 0 && s.indexOf("utility") >= 0) return ["utility", "high"];
+  if (sic >= "1311" && sic <= "1389" || s.indexOf("crude") >= 0 || s.indexOf("petroleum") >= 0) return ["ep", "high"];
+  if (sic >= "4600" && sic <= "4699" || s.indexOf("pipeline") >= 0) return ["midstream", "medium"];
+  if (sic >= "2830" && sic <= "2836" || s.indexOf("pharmaceutical") >= 0 || s.indexOf("biotech") >= 0) return ["pharma", "high"];
+  if (sic >= "4800" && sic <= "4899" || s.indexOf("telecom") >= 0 || s.indexOf("wireless") >= 0) return ["telecom", "medium"];
+  if (sic === "7372" || sic === "7371" || s.indexOf("software") >= 0 || s.indexOf("saas") >= 0) return ["saas_tech", "medium"];
+  if (sic === "7374" || s.indexOf("data process") >= 0 || s.indexOf("cloud") >= 0 || s.indexOf("amazon") >= 0 || s.indexOf("alphabet") >= 0 || s.indexOf("microsoft") >= 0 || s.indexOf("meta platform") >= 0) return ["hyperscaler", "medium"];
+  if (sic >= "6150" && sic <= "6199" || s.indexOf("payment") >= 0 || s.indexOf("fintech") >= 0 || s.indexOf("visa") >= 0 || s.indexOf("mastercard") >= 0) return ["fintech", "medium"];
+  if (sic >= "5200" && sic <= "5999" || s.indexOf("retail") >= 0 || s.indexOf("store") >= 0) return ["consumer", "medium"];
+  if (sic >= "3500" && sic <= "3699" || sic >= "3700" && sic <= "3799" || s.indexOf("semiconductor") >= 0) return ["industrial", "medium"];
+  return ["general", "low"];
 }
 
 async function fetchMarket(ticker) {
