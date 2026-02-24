@@ -55,6 +55,10 @@ button{cursor:pointer;border:none;border-radius:6px;font-weight:600}
   <div style="flex:1"><select id="formType"><option value="10-K">10-K</option><option value="10-Q">10-Q</option></select></div>
  </div>
  <button class="btn1" id="pullBtn" onclick="pullFiling()">&#9166; PULL FROM EDGAR</button>
+ 
+ <div class="row" style="margin-top:4px">
+  <div style="flex:3"><input id="proxyUrl" placeholder="Custom proxy URL (optional)" value="" style="font-size:11px;padding:8px"></div>
+ </div>
  <div class="chips" id="recents"></div>
  <div class="log" id="log"></div>
 </div>
@@ -834,6 +838,19 @@ var PROXY = "https://corsproxy.io/?";
 var PROXY2 = "https://api.allorigins.win/raw?url=";
 
 async function secGet(url) {
+  var custom = document.getElementById("proxyUrl").value.trim();
+  if (custom) {
+    try {
+      var controller = new AbortController();
+      var timeout = setTimeout(function() { controller.abort(); }, 15000);
+      var r = await fetch(custom + "?url=" + encodeURIComponent(url), {signal: controller.signal});
+      clearTimeout(timeout);
+      if (r.ok) return r;
+      log("  Custom proxy returned " + r.status, "warn");
+    } catch(e) {
+      log("  Custom proxy failed: " + (e.name === "AbortError" ? "timeout" : e.message), "warn");
+    }
+  }
   // Try corsproxy first (fast), then allorigins (larger files)
   try {
     var r = await fetch(PROXY + encodeURIComponent(url));
@@ -847,14 +864,31 @@ async function secGet(url) {
 }
 
 async function proxyFetch(url) {
-  try {
-    var r = await fetch(PROXY + encodeURIComponent(url));
-    if (r.ok) return r;
-  } catch(e) {}
-  try {
-    return await fetch(PROXY2 + encodeURIComponent(url));
-  } catch(e) {}
-  throw new Error("Fetch failed for: " + url.substring(0, 60));
+  var custom = document.getElementById("proxyUrl").value.trim();
+  if (custom) {
+    try {
+      var controller = new AbortController();
+      var timeout = setTimeout(function() { controller.abort(); }, 10000);
+      var r = await fetch(custom + "?url=" + encodeURIComponent(url), {signal: controller.signal});
+      clearTimeout(timeout);
+      if (r.ok) return r;
+    } catch(e) {}
+  }
+  var proxies = [
+    "https://corsproxy.io/?",
+    "https://api.allorigins.win/raw?url=",
+    "https://api.codetabs.com/v1/proxy?quest="
+  ];
+  for (var pi = 0; pi < proxies.length; pi++) {
+    try {
+      var controller = new AbortController();
+      var timeout = setTimeout(function() { controller.abort(); }, 8000);
+      var r = await fetch(proxies[pi] + encodeURIComponent(url), {signal: controller.signal});
+      clearTimeout(timeout);
+      if (r.ok) return r;
+    } catch(e) {}
+  }
+  throw new Error("Fetch failed");
 }
 
 async function pullFiling() {
