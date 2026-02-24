@@ -956,7 +956,7 @@ async function pullFiling() {
 
     document.getElementById("parseStatus").className = "st ok";
     document.getElementById("parseStatus").textContent = "\u2713 " + fins._form + " | " + (SECTOR_NAMES[fins._sector] || "General") + " | " + fields + " fields (XBRL)";
-    document.getElementById("inputsCard").style.display = "";
+    document.getElementById("inputsCard").className = "card";
     if (fins.shares_diluted && !document.getElementById("shares").value)
       document.getElementById("shares").value = (fins.shares_diluted / 1e6).toFixed(1);
     document.getElementById("sector").value = "auto";
@@ -1411,7 +1411,7 @@ function runDCFUI() {
   }
   fi2 += '<div style="margin-top:8px;font-size:10px;color:#445">Scale: ' + (currentFins._scale || 1000).toLocaleString() + ' | Tables: ' + currentFins._tables + ' | Shares: ' + s.toFixed(1) + 'M</div>';
   document.getElementById("tab-financials").innerHTML = fi2;
-  document.getElementById("results").style.display = "";
+  document.getElementById("results").className = "";
   showTab("summary", document.querySelector(".tabs button"));
   } catch(e) { log("DCF Error: " + e.message, "err"); console.error(e); }
 }
