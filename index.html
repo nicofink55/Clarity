@@ -830,17 +830,16 @@ try {
   } catch(initErr) { console.error("Init error:", initErr); }
 
 // ═══ SEC EDGAR FETCH ═══
+var PROXY = "https://corsproxy.io/?";
+
 async function secGet(url) {
-  try {
-    var r = await fetch(url);
-    if (!r.ok) throw new Error("SEC HTTP " + r.status);
-    return r;
-  } catch(e) {
-    if (e.message && e.message.indexOf("Failed to fetch") >= 0) {
-      throw new Error("CORS blocked - try from hosted site, not local file");
-    }
-    throw e;
-  }
+  var r = await fetch(PROXY + encodeURIComponent(url));
+  if (!r.ok) throw new Error("SEC HTTP " + r.status);
+  return r;
+}
+
+async function proxyFetch(url) {
+  return fetch(PROXY + encodeURIComponent(url));
 }
 
 async function pullFiling() {
@@ -914,14 +913,14 @@ async function fetchMarket(ticker) {
   log("Fetching market data...", "info");
   var price = 0, shares = 0, beta = null, name = ticker;
   try {
-    var r = await fetch("https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + ticker);
+    var r = await proxyFetch("https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + ticker);
     var d = await r.json(); var q = ((d.quoteResponse || {}).result || [])[0] || {};
     price = q.regularMarketPrice || 0; shares = q.sharesOutstanding || 0;
     name = q.shortName || q.longName || ticker;
     if (!shares && q.marketCap && price) shares = q.marketCap / price;
   } catch(e) {}
   try {
-    var r2 = await fetch("https://query2.finance.yahoo.com/v10/finance/quoteSummary/" + ticker + "?modules=price,defaultKeyStatistics");
+    var r2 = await proxyFetch("https://query2.finance.yahoo.com/v10/finance/quoteSummary/" + ticker + "?modules=price,defaultKeyStatistics");
     var d2 = await r2.json(); var mods = ((d2.quoteSummary || {}).result || [])[0] || {};
     var pm = mods.price || {}, ks = mods.defaultKeyStatistics || {};
     if (!price) price = ((pm.regularMarketPrice || {}).raw) || 0;
@@ -930,7 +929,7 @@ async function fetchMarket(ticker) {
     beta = ((ks.beta || {}).raw) || beta;
   } catch(e) {}
   if (!price) { try {
-    var r3 = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/" + ticker + "?range=1d&interval=1d");
+    var r3 = await proxyFetch("https://query1.finance.yahoo.com/v8/finance/chart/" + ticker + "?range=1d&interval=1d");
     var d3 = await r3.json(); price = ((((d3.chart || {}).result || [])[0] || {}).meta || {}).regularMarketPrice || 0;
   } catch(e) {} }
   if (price > 0) { document.getElementById("price").value = price.toFixed(2); log(name + " $" + price.toFixed(2), "ok"); }
