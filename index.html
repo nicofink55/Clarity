@@ -1360,6 +1360,7 @@ function log(msg, cls) {
 // ═══ UI ═══
 function runDCFUI() {
   if (!currentFins) return;
+  try {
   var p = parseFloat(document.getElementById("price").value);
   var s = parseFloat(document.getElementById("shares").value);
   if (!p || !s || p <= 0 || s <= 0) { document.getElementById("parseStatus").className = "st err"; document.getElementById("parseStatus").textContent = "Enter price and shares"; return; }
@@ -1412,6 +1413,7 @@ function runDCFUI() {
   document.getElementById("tab-financials").innerHTML = fi2;
   document.getElementById("results").style.display = "";
   showTab("summary", document.querySelector(".tabs button"));
+  } catch(e) { log("DCF Error: " + e.message, "err"); console.error(e); }
 }
 
 function mkRow(k, v, c) { return '<div class="dr"><span class="k">' + k + '</span><span class="v" style="color:' + (c || "var(--text)") + '">' + v + '</span></div>'; }
