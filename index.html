@@ -838,6 +838,21 @@ async function secGet(url) {
   return r;
 }
 
+async function secGetLarge(url) {
+  // For large filings - try multiple proxy strategies
+  // Strategy 1: allorigins (handles larger payloads)
+  try {
+    var r = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url));
+    if (r.ok) return r;
+  } catch(e) {}
+  // Strategy 2: corsproxy with timeout
+  try {
+    var r2 = await fetch(PROXY + encodeURIComponent(url));
+    if (r2.ok) return r2;
+  } catch(e) {}
+  throw new Error("Filing too large for proxy - use manual file upload");
+}
+
 async function proxyFetch(url) {
   return fetch(PROXY + encodeURIComponent(url));
 }
@@ -889,7 +904,7 @@ async function pullFiling() {
     log("Downloading...", "info");
     var accFlat = info.acc.replace(/-/g, ""), cikC = info.cik.replace(/^0+/, "");
     var url = "https://www.sec.gov/Archives/edgar/data/" + cikC + "/" + accFlat + "/" + info.doc;
-    var r3 = await secGet(url);
+    var r3 = await secGetLarge(url);
     var html = await r3.text();
     log("Downloaded " + Math.round(html.length / 1024) + "KB", "ok");
     
