@@ -990,11 +990,11 @@ async function fetchXBRLConcepts(cik, filingDate, is10K) {
     {field: "net_income", names: ["NetIncomeLoss", "ProfitLoss"], type: "annual"},
     {field: "operating_income", names: ["OperatingIncomeLoss"], type: "annual"},
     {field: "gross_profit", names: ["GrossProfit"], type: "annual"},
-    {field: "operating_cf", names: ["NetCashProvidedByOperatingActivities"], type: "annual"},
-    {field: "capex", names: ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"], type: "annual", abs: true},
+    {field: "operating_cf", names: ["NetCashProvidedByOperatingActivities", "NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByOperatingActivitiesContinuingOperations"], type: "annual"},
+    {field: "capex", names: ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets", "CapitalExpenditureDiscontinuedOperations"], type: "annual", abs: true},
     {field: "depreciation", names: ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"], type: "annual"},
     {field: "cash", names: ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"], type: "instant"},
-    {field: "long_term_debt", names: ["LongTermDebt", "LongTermDebtNoncurrent"], type: "instant"},
+    {field: "long_term_debt", names: ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"], type: "instant"},
     {field: "stockholders_equity", names: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"], type: "instant"},
     {field: "total_assets", names: ["Assets"], type: "instant"},
     {field: "total_liabilities", names: ["Liabilities"], type: "instant"},
@@ -1109,7 +1109,7 @@ async function fetchXBRLConcepts(cik, filingDate, is10K) {
         }
       } catch(e) { continue; }
     }
-    if (ci % 4 === 0) log("  " + (ci + 1) + "/" + concepts.length + " concepts...", "info");
+    if (r[concept.field]) { log("  \u2713 " + concept.field + " = " + (Math.abs(r[concept.field]) > 1e6 ? "$" + (r[concept.field]/1e9).toFixed(1) + "B" : r[concept.field]), "ok"); } else if (ci === concepts.length - 1 || ci % 3 === 0) { log("  " + (ci + 1) + "/" + concepts.length + " concepts...", "info"); }
   }
 
   // Derived
