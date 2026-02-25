@@ -983,6 +983,199 @@ async function pullFiling() {
 
 async function fetchXBRLConcepts(cik, filingDate, is10K) {
   var filingYear = parseInt(filingDate.substring(0, 4));
+  
+  // Try to fetch full company facts (most reliable, one request)
+  var factsUrl = "https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json";
+  log("  Fetching company facts...", "info");
+  
+  var factsData = null;
+  // Try with longer timeout - this file can be 1-3MB
+  var proxies = [
+    "https://api.allorigins.win/raw?url=",
+    "https://corsproxy.io/?",
+    "https://api.codetabs.com/v1/proxy?quest="
+  ];
+  var custom = document.getElementById("proxyUrl").value.trim();
+  if (custom) proxies.unshift(custom + "?url=");
+  
+  for (var pi = 0; pi < proxies.length; pi++) {
+    try {
+      log("  Trying proxy " + (pi + 1) + "...", "info");
+      var controller = new AbortController();
+      var timeout = setTimeout(function() { controller.abort(); }, 20000);
+      var resp = await fetch(proxies[pi] + encodeURIComponent(factsUrl), {signal: controller.signal});
+      clearTimeout(timeout);
+      if (resp.ok) {
+        factsData = await resp.json();
+        log("  \u2713 Company facts loaded", "ok");
+        break;
+      }
+      log("  Proxy " + (pi + 1) + " returned " + resp.status, "warn");
+    } catch(e) {
+      log("  Proxy " + (pi + 1) + ": " + (e.name === "AbortError" ? "timeout (20s)" : e.message), "warn");
+    }
+  }
+  
+  if (!factsData) {
+    // Fallback: try individual concepts with the working proxy
+    log("  Facts failed, trying individual concepts...", "warn");
+    return await fetchXBRLConceptsIndividual(cik, filingDate, is10K);
+  }
+  
+  var gaap = (factsData.facts || {})["us-gaap"] || {};
+  var dei = (factsData.facts || {})["dei"] || {};
+  var r = {};
+  
+  function getAnnual(conceptNames, withPrior) {
+    for (var ci = 0; ci < conceptNames.length; ci++) {
+      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
+      if (!concept) continue;
+      var values = (concept.units || {}).USD || (concept.units || {}).shares || (concept.units || {})["USD/shares"] || [];
+      if (!values.length) continue;
+      var annuals = [];
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi];
+        if (!v.end || !v.start) continue;
+        if (parseInt(v.end.substring(0, 4)) < filingYear - 3) continue;
+        var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
+        if (months >= 10 && months <= 14) annuals.push({val: v.val, end: v.end});
+      }
+      annuals.sort(function(a, b) { return b.end.localeCompare(a.end); });
+      // Deduplicate by end date
+      var seen = {}, unique = [];
+      for (var ai = 0; ai < annuals.length; ai++) {
+        if (!seen[annuals[ai].end]) { seen[annuals[ai].end] = true; unique.push(annuals[ai]); }
+      }
+      if (unique.length > 0) {
+        var result = {current: unique[0].val};
+        if (withPrior && unique.length >= 2) result.prior = unique[1].val;
+        return result;
+      }
+    }
+    return null;
+  }
+  
+  function getInstant(conceptNames) {
+    for (var ci = 0; ci < conceptNames.length; ci++) {
+      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
+      if (!concept) continue;
+      var values = (concept.units || {}).USD || [];
+      if (!values.length) continue;
+      var best = null, bestDate = "";
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi];
+        if (!v.end) continue;
+        if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
+        var hasStart = v.start && v.start !== "";
+        if (hasStart) {
+          var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
+          if (months > 2) continue;
+        }
+        if (v.end > bestDate) { best = v.val; bestDate = v.end; }
+      }
+      if (best !== null) return best;
+    }
+    return null;
+  }
+  
+  function getShares(conceptNames) {
+    for (var ci = 0; ci < conceptNames.length; ci++) {
+      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
+      if (!concept) continue;
+      var values = (concept.units || {}).shares || [];
+      if (!values.length) continue;
+      // Prefer annual weighted average
+      var best = null, bestDate = "";
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi];
+        if (!v.end || !v.start) continue;
+        if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
+        var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
+        if (months >= 10 && months <= 14 && v.end > bestDate) { best = v.val; bestDate = v.end; }
+      }
+      if (best !== null) return best;
+      // Fallback: any recent reasonable value
+      bestDate = "";
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi];
+        if (!v.end) continue;
+        if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
+        if (v.val > 0 && v.val < 1e11 && v.end > bestDate) { best = v.val; bestDate = v.end; }
+      }
+      return best;
+    }
+    return null;
+  }
+  
+  // Extract all fields
+  var rev = getAnnual(["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "InterestIncomeExpenseNet"], true);
+  if (rev) { r.revenue = rev.current; if (rev.prior) r.revenue_prior = rev.prior; }
+  
+  var ni = getAnnual(["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"], false);
+  if (ni) r.net_income = ni.current;
+  
+  var oi = getAnnual(["OperatingIncomeLoss"], false);
+  if (oi) r.operating_income = oi.current;
+  
+  var gp = getAnnual(["GrossProfit"], false);
+  if (gp) r.gross_profit = gp.current;
+  
+  var ocf = getAnnual(["NetCashProvidedByOperatingActivities", "NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByOperatingActivitiesContinuingOperations"], false);
+  if (ocf) r.operating_cf = ocf.current;
+  
+  var cx = getAnnual(["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"], false);
+  if (cx) r.capex = Math.abs(cx.current);
+  
+  var da = getAnnual(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "Depreciation"], false);
+  if (da) r.depreciation = da.current;
+  
+  var cash = getInstant(["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"]);
+  if (cash !== null) r.cash = cash;
+  
+  var debt = getInstant(["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]);
+  if (debt !== null) r.long_term_debt = debt;
+  
+  var eq = getInstant(["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]);
+  if (eq !== null) r.stockholders_equity = eq;
+  
+  var ta = getInstant(["Assets"]);
+  if (ta !== null) r.total_assets = ta;
+  
+  var tl = getInstant(["Liabilities"]);
+  if (tl !== null) r.total_liabilities = tl;
+  
+  var eps = getAnnual(["EarningsPerShareDiluted"], false);
+  if (eps) r.eps_diluted = eps.current;
+  
+  var sh = getShares(["WeightedAverageNumberOfDilutedSharesOutstanding"]);
+  if (sh) r.shares_diluted = sh;
+  if (!r.shares_diluted) {
+    var sh2 = getShares(["EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"]);
+    if (sh2) r.shares_diluted = sh2;
+  }
+  if (!r.shares_diluted && r.net_income && r.eps_diluted && Math.abs(r.eps_diluted) > 0.01) {
+    r.shares_diluted = Math.abs(r.net_income / r.eps_diluted);
+  }
+  
+  // Derived
+  if (r.operating_cf && r.capex) r.fcf = r.operating_cf - r.capex;
+  else if (r.operating_cf) { r.capex = 0; r.fcf = r.operating_cf; }
+  
+  // Log what we found
+  var found = Object.keys(r).filter(function(k) { return k.charAt(0) !== "_"; });
+  for (var fi = 0; fi < found.length; fi++) {
+    var k = found[fi], v = r[k];
+    if (Math.abs(v) > 1e6) log("  \u2713 " + k + " = $" + (v / 1e9).toFixed(1) + "B", "ok");
+    else if (Math.abs(v) > 100) log("  \u2713 " + k + " = " + (v / 1e6).toFixed(1) + "M", "ok");
+    else log("  \u2713 " + k + " = " + v, "ok");
+  }
+  
+  return r;
+}
+
+// Fallback: individual concept fetches (if companyfacts too large)
+async function fetchXBRLConceptsIndividual(cik, filingDate, is10K) {
+  var filingYear = parseInt(filingDate.substring(0, 4));
   var r = {};
 
   var concepts = [
