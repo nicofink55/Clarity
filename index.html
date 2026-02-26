@@ -717,6 +717,7 @@ function runBdcModel(fins, price, shares, sector) {
   var navPerShare = nav > 0 && shares > 0 ? nav / shares : 0;
   var nii = fins.operating_income || fins.net_income || 0;
   var totalIi = fins.revenue || 0;
+  var revPrior = fins.revenue_prior || 0;
   var debt = fins.long_term_debt || 0;
   var cash = fins.cash || 0;
   var roe = nav > 0 ? nii / nav : 0;
@@ -745,7 +746,9 @@ function runBdcModel(fins, price, shares, sector) {
   var verdict = pwUp > 30 ? "STRONG BUY" : pwUp > 10 ? "BUY" : pwUp > -10 ? "HOLD" : pwUp > -25 ? "SELL" : "STRONG SELL";
   return {
     pw_fv:Math.round(pwFv*100)/100, pw_up:pwUp, verdict:verdict, wacc:coe,
-    scenarios:scenResults, trailing_growth:null, implied_fcf_growth:null, implied_rev_growth:null,
+    scenarios:scenResults,
+    trailing_growth:revPrior > 0 ? (totalIi - revPrior) / revPrior : null,
+    implied_fcf_growth:null, implied_rev_growth:null,
     sanity_flags:["BDC: NAV-based valuation","P/NAV: "+(navPerShare>0?(price/navPerShare).toFixed(2):0)+"x","Div yield: "+divYield.toFixed(1)+"%","ROE: "+(roe*100).toFixed(1)+"%","Leverage: "+(leverage*100).toFixed(0)+"% of NAV"],
     is_buyback_machine:false, sbc_haircut:0, price_paths:null,
     market_implies:null, asset_floor:{ book_per_share:Math.round(navPerShare*100)/100, tangible_floor:Math.round(navPerShare*100)/100, book_to_price:price>0?Math.round(navPerShare/price*10000)/100:null },
@@ -1126,6 +1129,7 @@ function runDcf(fins, price, sharesMil, sector, beta) {
     adjTerminal = Math.min(adjTerminal, TERMINAL_CAPS[sector] || 20);
 
     var effFcf = fcf * marginFactor;
+  var EBITDA_FCFF = {saas_tech:0.65,fintech:0.65,data_analytics:0.65,hyperscaler:0.60,pharma:0.60,consumer:0.55,aero_defense:0.55,general:0.55,industrial:0.50,telecom:0.48,utility:0.45,ep:0.45,midstream:0.50};
     var useEvDcf = nd > mcap * 0.10 && sector !== "bank" && sector !== "insurance";
     var fv;
 
@@ -1137,7 +1141,7 @@ function runDcf(fins, price, sharesMil, sector, beta) {
     } else if (useHybrid) {
       var fvFcf;
       if (useEvDcf) {
-        var fcff = oi > 0 && da > 0 ? (oi * 0.79 + da - maintCapex) * marginFactor : ebitda > 0 ? ebitda * 0.55 * marginFactor : effFcf * 1.3;
+        var fcff = oi > 0 && da > 0 ? (oi * 0.79 + da - maintCapex) * marginFactor : ebitda > 0 ? ebitda * (EBITDA_FCFF[sector] || 0.55) * marginFactor : effFcf * 1.3;
         fvFcf = dcfEv(fcff, path, adjTerminal, wacc, shares, Math.max(nd, 0));
       } else { fvFcf = dcfFcf(effFcf, path, adjTerminal, wacc, shares, Math.max(nc, 0)); }
       var startM = Math.max(curFcfMargin, 0.02);
@@ -1146,7 +1150,7 @@ function runDcf(fins, price, sharesMil, sector, beta) {
       var fvRev = dcfRevMargin(rev, path, startM, tgtM, adjTerminal, wacc, shares, Math.max(nc, 0));
       fv = fvFcf * fcfWeight + fvRev * revWeight;
     } else if (useEvDcf) {
-      var fcff = oi > 0 && da > 0 ? (oi * 0.79 + da - maintCapex) * marginFactor : ebitda > 0 ? ebitda * 0.55 * marginFactor : effFcf * 1.3;
+      var fcff = oi > 0 && da > 0 ? (oi * 0.79 + da - maintCapex) * marginFactor : ebitda > 0 ? ebitda * (EBITDA_FCFF[sector] || 0.55) * marginFactor : effFcf * 1.3;
       fv = dcfEv(fcff, path, adjTerminal, wacc, shares, Math.max(nd, 0));
     } else {
       fv = dcfFcf(effFcf, path, adjTerminal, wacc, shares, Math.max(nc, 0));
@@ -1232,6 +1236,8 @@ function runDcf(fins, price, sharesMil, sector, beta) {
   if (useRevMargin) sanityFlags.push("Pre-profit: revenue\u00D7margin DCF");
   if (useHybrid) sanityFlags.push("Hybrid DCF: " + Math.round(fcfWeight*100) + "% FCF + " + Math.round(revWeight*100) + "% rev-margin");
   if (amortIntangible > 0) sanityFlags.push("Intangible amort addback: $" + Math.round(amortIntangible/1e6) + "M/yr");
+  if (wcAdj > 0) sanityFlags.push("WC normalized: $" + Math.round(wcAdj/1e6) + "M inventory build");
+  if (capexWaste > 0 && growthCapex > 0) sanityFlags.push("CapEx conversion: " + Math.round((1-wastePct)*100) + "% of $" + (growthCapex/1e9).toFixed(0) + "B growth capex credited");
 
   if (pwUp > 30) var verdict = "STRONG BUY";
   else if (pwUp > 10) var verdict = "BUY";
