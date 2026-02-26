@@ -1399,16 +1399,29 @@ async function fetchXBRLConcepts(cik, filingDate, is10K) {
       var concept = gaap[names[ci]]||dei[names[ci]]; if (!concept) continue;
       var values = (concept.units||{}).USD||(concept.units||{}).shares||(concept.units||{})["USD/shares"]||[];
       if (!values.length) continue;
-      var annuals = [];
+      var annuals = [], ytds = [];
       for (var vi = 0; vi < values.length; vi++) {
         var v = values[vi]; if (!v.end||!v.start) continue;
         if (parseInt(v.end.substring(0,4))<filingYear-3) continue;
         var months = Math.round((new Date(v.end)-new Date(v.start))/(30.44*86400000));
-        if (months>=10&&months<=14) annuals.push({val:v.val,end:v.end});
+        if (months>=10&&months<=14) annuals.push({val:v.val,end:v.end,months:months});
+        else if (months>=4&&months<=10) ytds.push({val:v.val,end:v.end,months:months});
       }
       annuals.sort(function(a,b){return b.end.localeCompare(a.end)});
       var seen={},unique=[];
       for (var ai=0;ai<annuals.length;ai++) if(!seen[annuals[ai].end]){seen[annuals[ai].end]=true;unique.push(annuals[ai]);}
+      // Check if YTD data is materially newer than latest annual
+      ytds.sort(function(a,b){return b.end.localeCompare(a.end)});
+      var bestYtd = ytds.length > 0 ? ytds[0] : null;
+      var bestAnnual = unique.length > 0 ? unique[0] : null;
+      if (bestYtd && (!bestAnnual || bestYtd.end > bestAnnual.end)) {
+        var annFactor = 12 / bestYtd.months;
+        var annualized = bestYtd.val * annFactor;
+        var res = {current: annualized, _annualized: true, _months: bestYtd.months};
+        if (withPrior && bestAnnual) res.prior = bestAnnual.val;
+        else if (withPrior && unique.length >= 1) res.prior = unique[0].val;
+        return res;
+      }
       if (unique.length>0) { var res={current:unique[0].val}; if(withPrior&&unique.length>=2) res.prior=unique[1].val; return res; }
     }
     return null;
@@ -1458,7 +1471,7 @@ async function fetchXBRLConcepts(cik, filingDate, is10K) {
 
   // Revenue
   var revData = getAnnual(["Revenues","RevenueFromContractWithCustomerExcludingAssessedTax","SalesRevenueNet","RevenueFromContractWithCustomerIncludingAssessedTax","InterestIncomeExpenseNet","TotalRevenuesAndOtherIncome","NetInterestIncome"], true);
-  if (revData) { r.revenue = revData.current; if (revData.prior) r.revenue_prior = revData.prior; }
+  if (revData) { r.revenue = revData.current; if (revData.prior) r.revenue_prior = revData.prior; if (revData._annualized) log("Using "+revData._months+"M YTD data \u00D7"+(12/revData._months).toFixed(1)+" annualized","info"); }
   // Net Income
   var niData = getAnnual(["NetIncomeLoss","ProfitLoss","NetIncomeLossAvailableToCommonStockholdersBasic"]);
   if (niData) r.net_income = niData.current;
