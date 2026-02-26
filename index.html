@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Clarity">
-<title>Clarity v7</title>
+<title>Clarity v8</title>
 <style>
 :root{--bg:#07070c;--panel:#0d0d18;--border:#1a1a2e;--neon:#00e5ff;--neon2:#7c4dff;--pink:#ff4081;--green:#00e676;--yellow:#fdd835;--red:#ff5252;--text:#c8ccd4;--dim:#556;--dark:#0a0a12;--font:'SF Mono','Menlo','Consolas',monospace}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -44,10 +44,12 @@ button{cursor:pointer;border:none;border-radius:6px;font-weight:600}
 .chip:active{background:var(--border)}
 .flag{font-size:10px;color:var(--yellow);margin-top:4px}
 .hide{display:none}
+.sect{font-size:10px;color:var(--neon2);margin:8px 0 4px;padding-top:6px;border-top:1px solid var(--dark);text-transform:uppercase;letter-spacing:1px}
+canvas{width:100%;border-radius:6px;margin-top:8px}
 </style>
 </head>
 <body>
-<div class="hdr"><h1>CLARITY</h1><sub>SEC Filing &rarr; Probabilistic DCF &middot; v7</sub></div>
+<div class="hdr"><h1>CLARITY</h1><sub>SEC Filing &rarr; Probabilistic DCF &middot; v8</sub></div>
 <div class="card">
  <div class="lbl">Ticker</div>
  <div class="row">
@@ -55,7 +57,6 @@ button{cursor:pointer;border:none;border-radius:6px;font-weight:600}
   <div style="flex:1"><select id="formType"><option value="10-K">10-K</option><option value="10-Q">10-Q</option></select></div>
  </div>
  <button class="btn1" id="pullBtn" onclick="pullFiling()">&#9166; PULL FROM EDGAR</button>
- 
  <div class="row" style="margin-top:4px">
   <div style="flex:3"><input id="proxyUrl" placeholder="Custom proxy URL (optional)" value="" style="font-size:11px;padding:8px"></div>
  </div>
@@ -91,61 +92,70 @@ button{cursor:pointer;border:none;border-radius:6px;font-weight:600}
   <button class="act" onclick="showTab('summary',this)">Summary</button>
   <button onclick="showTab('scenarios',this)">Scenarios</button>
   <button onclick="showTab('financials',this)">Financials</button>
+  <button onclick="showTab('beyond',this)">Beyond DCF</button>
  </div>
  <div id="tab-summary" class="card"></div>
  <div id="tab-scenarios" class="card hide"></div>
  <div id="tab-financials" class="card hide"></div>
+ <div id="tab-beyond" class="card hide"></div>
+ <canvas id="chartCanvas" class="hide" height="220"></canvas>
 </div>
-<div style="text-align:center;padding:16px 0 8px;font-size:9px;color:#333">CLARITY v7 &middot; Full SEC Parser</div>
+<div style="text-align:center;padding:16px 0 8px;font-size:9px;color:#333">CLARITY v8 &middot; Full SEC Parser + Gordon Growth DCF</div>
 <script>
-
-// ═══ ENGINE (from React artifact) ═══
-
-
 // ═══════════════════════════════════════════════════════════
-// CLARITY PWA — SEC Filing → Probabilistic DCF Analyzer
-// Full port of Python engine to client-side JavaScript
+// CLARITY v8 — SEC Filing → Probabilistic DCF Analyzer
+// Full port of Python desktop engine to client-side JavaScript
 // ═══════════════════════════════════════════════════════════
 
 // ── Number parsing ──
 function cleanNum(text) {
   if (!text || typeof text !== "string") return null;
   text = text.trim();
-  if (["—", "–", "-", "", "N/A", "*", "$", "N/M", ")", "("].includes(text)) return null;
-  const isNeg = text.includes("(");
-  let cleaned = text.replace(/[$,\s()]/g, "");
+  if (["\u2014","\u2013","-","","N/A","*","$","N/M",")","\("].includes(text)) return null;
+  var isNeg = text.includes("(");
+  var cleaned = text.replace(/[$,\s()]/g, "");
   cleaned = cleaned.replace(/%.*$/, "");
   cleaned = cleaned.replace(/[A-Za-z]+$/, "");
-  if (!cleaned || ["—", "–", "-"].includes(cleaned)) return null;
-  const val = parseFloat(cleaned);
+  if (!cleaned || ["\u2014","\u2013","-"].includes(cleaned)) return null;
+  var val = parseFloat(cleaned);
   if (isNaN(val)) return null;
   return isNeg ? -val : val;
 }
 
-// ── Scale detection (vote-based) ──
+// ── Scale detection (vote-based, with shares-context fix) ──
 function detectScale(text) {
-  const t = text.toLowerCase();
-  const thou = (t.match(/in\s+thousands|in\s+\$\s*000|\(\s*thousands/g) || []).length;
-  const mill = (t.match(/in\s+millions|\(\s*millions/g) || []).length;
-  const bill = (t.match(/in\s+billions|\(\s*billions/g) || []).length;
+  var t = text.toLowerCase();
+  var thou = (t.match(/in\s+thousands|in\s+\$\s*000|\(\s*thousands|\(0{3}[,\s)]/g) || []).length;
+  var mill = (t.match(/in\s+millions|\(\s*millions/g) || []).length;
+  var bill = (t.match(/in\s+billions|\(\s*billions/g) || []).length;
+  // CRITICAL FIX: "(in millions, except shares in thousands)" is common
+  if (thou > 0 && mill > 0) {
+    if (/(?:shares?|number\s+of\s+shares?|share\s+data|per\s+share).*?(?:in\s+thousands|thousands)/i.test(t))
+      return 1e6;
+  }
   if (bill > 0 && bill >= thou && bill >= mill) return 1e9;
   if (thou > 0 && thou >= mill) return 1e3;
   if (mill > 0) return 1e6;
   if (/except\s+per[\s-]+share/i.test(t) || /except\s+share\s+data/i.test(t)) return 1e6;
+  if (/\(\s*\$\s*0{3}/i.test(t) || /\(0{3}[,\s]/i.test(t)) return 1e3;
   return 1000;
+}
+
+function scaleIsExplicit(text) {
+  return /in\s+thousands|in\s+millions|in\s+billions|\(\s*thousands|\(\s*millions|\(\s*billions|in\s+\$\s*000|\(\s*\$\s*0{3}|\(0{3}[,\s)]|except\s+per[\s-]+share|except\s+share\s+data/i.test(text.toLowerCase());
 }
 
 // ── Form detection ──
 function detectForm(fullText, filename) {
-  const ft = fullText.toLowerCase();
+  var ft = fullText.toLowerCase();
   if (filename) {
-    const fn = filename.toLowerCase();
+    var fn = filename.toLowerCase();
     if (fn.includes("10-q") || fn.includes("10q")) return ["10-Q", true];
     if (fn.includes("20-f") || fn.includes("20f")) return ["20-F", false];
     if (fn.includes("10-k") || fn.includes("10k")) return ["10-K", false];
   }
   if (/\bq[1-3]\b/.test(ft.slice(0, 500))) return ["10-Q", true];
-  const area = ft.slice(0, 30000);
+  var area = ft.slice(0, 30000);
   if (/\b10-q\b/.test(area) || /quarterly\s+report/.test(area)) return ["10-Q", true];
   if (/\b20-f\b/.test(area)) return ["20-F", false];
   if (/three\s+months?\s+ended/.test(ft)) return ["10-Q", true];
@@ -153,46 +163,72 @@ function detectForm(fullText, filename) {
 }
 
 // ── Sector detection ──
+var SECTOR_RULES = [
+  [["net asset value per share","business development company","regulated investment company","investment income","net investment income","total investment income","net increase in net assets","net realized gain","unrealized appreciation","portfolio company","subchapter m","distributable earnings","incentive fees"], "bdc", 4],
+  [["defense contract","defense system","defense segment","military aircraft","missile system","fighter aircraft","munitions","weapons system","department of defense","dod contract","rotary wing","combat system","radar system","electronic warfare","f-35","patriot missile","defense electronics","defense revenue","defense backlog","funded backlog","unfunded backlog","cost-plus contract","lockheed","raytheon","northrop","general dynamics","l3harris"], "aero_defense", 3],
+  [["net interest income","provision for credit loss","loan loss","nonperforming","tier 1 capital","net interest margin","deposits","allowance for loan"], "bank", 3],
+  [["medical loss ratio","premiums earned","claims and benefits","underwriting income","policy liabilities","loss ratio","benefit ratio","medical costs"], "insurance", 3],
+  [["regulated utility","rate base","public utility","kilowatt","megawatt","rate case","electric utility","generation capacity","ratepayer"], "utility", 3],
+  [["barrels of oil","crude oil production","natural gas production","proved reserves","exploration and production","boe/d","drilling"], "ep", 3],
+  [["pipeline","gathering and processing","natural gas liquids","throughput","tariff rate","master limited","midstream"], "midstream", 3],
+  [["clinical trial","fda approval","drug candidate","therapeutic area","phase 1","phase 2","phase 3","investigational new drug","biologics","new drug application"], "pharma", 2],
+  [["wireless subscribers","postpaid","prepaid subscribers","spectrum","cell sites","arpu","average revenue per user","mobile subscribers"], "telecom", 3],
+  [["credit rating","credit score","ratings revenue","index revenue","analytics revenue","market intelligence","data analytics subscription","information services","risk assessment","debt rating","rating agency"], "data_analytics", 3],
+  [["subscription revenue","annual recurring revenue","saas","cloud-based platform","software-as-a-service","recurring revenue","platform revenue","net retention rate","subscription services"], "saas_tech", 2],
+  [["payment processing","transaction volume","gross payment volume","payment facilitator","interchange","total payment volume","take rate","merchant"], "fintech", 2],
+  [["same-store sales","comparable store sales","retail stores","e-commerce","consumer products","brand portfolio","store count","comp sales"], "consumer", 2],
+  [["data center","cloud computing","hyperscal","cloud services","cloud revenue","ai infrastructure","gpu","ai accelerat","optical transceiver","datacenter","networking segment"], "hyperscaler", 1.5],
+  [["semiconductor","wafer","fabrication","backlog","defense contract","industrial equipment","manufacturing capacity","silicon carbide","optoelectronic","photonics","laser"], "industrial", 1.5],
+];
+
 var SECTOR_NAMES = {
-  hyperscaler: "Mega-Cap / Hyperscaler", saas_tech: "SaaS / Tech / Cloud",
-  pharma: "Pharma / Biotech", bank: "Bank", ep: "E&P (Oil & Gas)",
-  midstream: "Midstream", utility: "Utility", consumer: "Consumer / Retail",
-  industrial: "Industrial / Semis", fintech: "Fintech / Payments",
-  insurance: "Insurance / Managed Care", telecom: "Telecom / Media", general: "General",
+  bdc:"BDC / CEF", aero_defense:"Aerospace & Defense", data_analytics:"Data / Analytics / Ratings",
+  hyperscaler:"Mega-Cap / Hyperscaler", saas_tech:"SaaS / Tech", pharma:"Pharma / Biotech",
+  bank:"Bank", ep:"E&P (Oil & Gas)", midstream:"Midstream", utility:"Utility",
+  consumer:"Consumer / Retail", industrial:"Industrial / Semis", fintech:"Fintech / Payments",
+  insurance:"Insurance / Managed Care", telecom:"Telecom / Media", general:"General",
 };
 
 function detectSector(fullText) {
-  const ft = fullText.toLowerCase();
-  const rules = [
-    [["net interest income","provision for credit loss","loan loss","tier 1 capital","net interest margin","deposits","allowance for loan"], "bank", 3],
-    [["medical loss ratio","premiums earned","claims and benefits","underwriting income","policy liabilities","loss ratio","benefit ratio"], "insurance", 3],
-    [["regulated utility","rate base","public utility","kilowatt","megawatt","rate case","electric utility","ratepayer"], "utility", 3],
-    [["barrels of oil","crude oil production","natural gas production","proved reserves","exploration and production","boe/d","drilling"], "ep", 3],
-    [["pipeline","gathering and processing","natural gas liquids","throughput","tariff rate","midstream"], "midstream", 3],
-    [["clinical trial","fda approval","drug candidate","therapeutic area","phase 1","phase 2","phase 3","biologics"], "pharma", 2],
-    [["wireless subscribers","postpaid","prepaid subscribers","spectrum","arpu","mobile subscribers"], "telecom", 3],
-    [["subscription revenue","annual recurring revenue","saas","cloud-based platform","software-as-a-service","recurring revenue","net retention rate"], "saas_tech", 2],
-    [["payment processing","transaction volume","gross payment volume","interchange","total payment volume","take rate","merchant"], "fintech", 2],
-    [["same-store sales","comparable store sales","retail stores","consumer products","comp sales"], "consumer", 2],
-    [["data center","cloud computing","hyperscal","cloud services","cloud revenue","ai infrastructure","gpu","datacenter"], "hyperscaler", 1.5],
-    [["semiconductor","wafer","fabrication","backlog","defense contract","silicon carbide","photonics","laser"], "industrial", 1.5],
-  ];
-  const scores = {};
-  for (const [kws, sector, weight] of rules) {
-    let hits = 0;
-    for (const kw of kws) {
-      const re = new RegExp(kw.replace(/[-.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-      const count = Math.min((ft.match(re) || []).length, 10);
+  var ft = fullText.toLowerCase();
+  var scores = {};
+  for (var ri = 0; ri < SECTOR_RULES.length; ri++) {
+    var kws = SECTOR_RULES[ri][0], sector = SECTOR_RULES[ri][1], weight = SECTOR_RULES[ri][2];
+    var hits = 0;
+    for (var ki = 0; ki < kws.length; ki++) {
+      var re = new RegExp(kws[ki].replace(/[-.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+      var count = Math.min((ft.match(re) || []).length, 10);
       if (count > 0) hits += count;
     }
     if (hits) scores[sector] = (scores[sector] || 0) + hits * weight;
   }
   if (ft.includes("net interest income") && !ft.includes("subscription"))
     scores.bank = (scores.bank || 0) + 50;
-  let best = "general", bestScore = 0;
-  for (const [s, sc] of Object.entries(scores))
-    if (sc > bestScore) { best = s; bestScore = sc; }
-  return [best, bestScore > 20 ? "high" : bestScore >= 5 ? "medium" : "low"];
+  var best = "general", bestScore = 0;
+  for (var s in scores) if (scores[s] > bestScore) { best = s; bestScore = scores[s]; }
+  if (bestScore < 5) return ["general", "low"];
+  return [best, bestScore > 20 ? "high" : "medium"];
+}
+
+function detectSectorFromSIC(sic, sicDesc, companyName) {
+  sic = String(sic || ""); sicDesc = (sicDesc || "").toLowerCase(); companyName = (companyName || "").toLowerCase();
+  var s = sic.substring(0, 2);
+  if (["60","61","62"].includes(s) || sicDesc.includes("bank") || sicDesc.includes("depository")) return ["bank","medium"];
+  if (s === "63" || s === "64" || sicDesc.includes("insurance") || sicDesc.includes("managed care")) return ["insurance","medium"];
+  if (s === "49" || sicDesc.includes("electric") || sicDesc.includes("utility") || sicDesc.includes("gas distribution")) return ["utility","medium"];
+  if (sic === "1311" || sic === "1381" || sic === "1382" || sicDesc.includes("crude petroleum") || sicDesc.includes("oil and gas")) return ["ep","medium"];
+  if (s === "46" || sicDesc.includes("pipeline") || sicDesc.includes("natural gas transmission")) return ["midstream","medium"];
+  if (s === "28" || sicDesc.includes("pharmaceutical") || sicDesc.includes("biological") || sicDesc.includes("medicinal")) return ["pharma","medium"];
+  if (s === "48" || sicDesc.includes("telephone") || sicDesc.includes("broadcasting") || sicDesc.includes("cable")) return ["telecom","medium"];
+  if (sic === "7372" || sic === "7371" || sicDesc.includes("prepackaged software") || sicDesc.includes("computer programming")) return ["saas_tech","medium"];
+  if (s === "36" || s === "35" || sicDesc.includes("semiconductor") || sicDesc.includes("electronic component")) return ["industrial","medium"];
+  if (sicDesc.includes("retail") || ["52","53","54","56","57","58","59"].includes(s)) return ["consumer","medium"];
+  if (["lockheed","raytheon","northrop","general dynamics","l3harris","bae ","boeing"].some(function(x){return companyName.includes(x)})) return ["aero_defense","high"];
+  if (["amazon","microsoft","alphabet","google","meta platforms","apple inc"].some(function(x){return companyName.includes(x)})) return ["hyperscaler","high"];
+  if (["visa","mastercard","paypal","square","block inc","fiserv","global payments"].some(function(x){return companyName.includes(x)})) return ["fintech","high"];
+  if (["moody","s&p global","fico","verisk","msci","factset","morningstar"].some(function(x){return companyName.includes(x)})) return ["data_analytics","high"];
+  if (["ares capital","main street","owl rock","blue owl","hercules","golub","prospect capital","gladstone","trinity capital"].some(function(x){return companyName.includes(x)})) return ["bdc","high"];
+  return ["general","low"];
 }
 
 // ── Labels for field extraction ──
@@ -203,35 +239,39 @@ var LABELS = {
   gp: ["gross profit"],
   ta: ["total assets"],
   cash: ["cash and cash equivalents","cash and equivalents","cash, cash equivalents"],
-  debt: ["long-term debt","long term debt","total long-term debt","senior notes","long-term borrowings","total debt"],
+  debt: ["long-term debt","long term debt","total long-term debt","senior notes","long-term borrowings","total debt","debt, noncurrent","debt noncurrent","long-term notes","notes payable, noncurrent"],
+  convertible_debt: ["convertible notes","convertible debt","convertible senior notes"],
   tl: ["total liabilities"],
   eq: ["total stockholders","total shareholders","total equity","total stockholders' equity","total shareholders' equity","total shareowners' equity"],
-  ocf: ["net cash provided by operating","net cash provided from operating","net cash from operating","cash provided by operating activities","net cash used in operating","net cash provided by (used in) operating","net cash provided from (used for) operating","cash flows from operating","net cash generated from operating","cash from operating activities","net cash flows provided by","net cash flows from operating"],
-  capex: ["capital expenditure","purchases of property","purchase of property","additions to property","expenditures for property","purchases of property and equipment","acquisition of property","capital spending"],
+  ocf: ["net cash provided by operating","net cash provided from operating","net cash from operating","cash provided by operating activities","net cash used in operating","net cash provided by (used in) operating","net cash provided from (used for) operating","cash flows from operating","net cash generated from operating","cash generated from operating","cash from operating activities","net cash flows provided by","net cash flows provided by (used in) operating","net cash flows from operating"],
+  capex: ["capital expenditure","purchases of property","purchase of property","additions to property","expenditures for property","purchases of property and equipment","acquisition of property","property and equipment additions","capital spending","purchases of intangible assets"],
   da: ["depreciation and amortization","depreciation"],
-  shares_dil: ["diluted weighted average","weighted average common shares","shares used in computation","weighted-average shares used","diluted weighted average commo","weighted average number of shares","weighted-average diluted shares","weighted average diluted shares","total weighted-average diluted","average diluted shares","diluted shares outstanding","diluted average common"],
+  amort_intangible: ["amortization of intangible","amortization of acquired","amortization of other intangible","amortization of purchased"],
+  sbc: ["share-based compensation","stock-based compensation","share based compensation","stock based compensation"],
+  inventory_change: ["inventories","increase in inventories","decrease in inventories","change in inventories"],
+  shares_dil: ["diluted weighted average","weighted average common shares","shares used in computation","weighted-average shares used","diluted weighted average commo","weighted average number of shares","weighted-average diluted shares","weighted average diluted shares","total weighted-average diluted","average diluted shares","diluted shares outstanding","diluted average common","diluted shares"],
 };
 
-function findValue(rows, labels, colIdx = 0, exclude = null) {
-  for (const row of rows) {
-    if (!row) continue;
-    const rowText = row.map(c => String(c || "")).join(" ").toLowerCase();
-    if (exclude && exclude.some(x => rowText.includes(x))) continue;
-    for (const label of labels) {
-      if (rowText.includes(label.toLowerCase())) {
-        const merged = [];
-        let i = 0;
+function findValue(rows, labels, colIdx, exclude) {
+  colIdx = colIdx || 0;
+  for (var ri = 0; ri < rows.length; ri++) {
+    var row = rows[ri]; if (!row) continue;
+    var rowText = row.map(function(c){return String(c||"")}).join(" ").toLowerCase();
+    if (exclude && exclude.some(function(x){return rowText.includes(x)})) continue;
+    for (var li = 0; li < labels.length; li++) {
+      if (rowText.includes(labels[li].toLowerCase())) {
+        var merged = [], i = 0;
         while (i < row.length) {
-          const s = String(row[i] || "").trim();
+          var s = String(row[i] || "").trim();
           if (s === "$" && i + 1 < row.length) {
-            const nxt = String(row[i + 1] || "").trim();
+            var nxt = String(row[i + 1] || "").trim();
             if (nxt && nxt !== "" && nxt !== "$") { merged.push("$" + nxt); i += 2; continue; }
           } else if (s === "(" && i + 1 < row.length) {
             merged.push("(" + String(row[i + 1] || "").trim()); i += 2; continue;
           }
           merged.push(s); i++;
         }
-        const nums = merged.map(c => cleanNum(c)).filter(n => n !== null);
+        var nums = merged.map(function(c){return cleanNum(c)}).filter(function(n){return n !== null});
         if (nums.length > colIdx) return nums[colIdx];
       }
     }
@@ -240,53 +280,58 @@ function findValue(rows, labels, colIdx = 0, exclude = null) {
 }
 
 function detectPeriod(table, fullText, is10q) {
-  let hasThree = false, hasNine = false, hasSix = false, hasTwelve = false;
-  const yearsFound = [];
-  for (const row of table.slice(0, 5)) {
-    const rt = row.map(c => String(c || "")).join(" ").toLowerCase();
+  var hasThree = false, hasNine = false, hasSix = false, hasTwelve = false;
+  var yearsFound = [];
+  for (var ri = 0; ri < Math.min(table.length, 5); ri++) {
+    var row = table[ri];
+    var rt = row.map(function(c){return String(c||"")}).join(" ").toLowerCase();
     if (rt.includes("three month")) hasThree = true;
     if (rt.includes("nine month")) hasNine = true;
     if (rt.includes("six month")) hasSix = true;
     if (rt.includes("twelve month") || rt.includes("year ended")) hasTwelve = true;
-    for (const c of row) {
-      const cs = String(c || ""); const cl = cs.toLowerCase();
-      if (["change","vs.","vs ","variance","growth"].some(x => cl.includes(x))) continue;
-      const m = cs.match(/(20[1-3]\d)/);
+    for (var ci = 0; ci < row.length; ci++) {
+      var cs = String(row[ci] || ""), cl = cs.toLowerCase();
+      if (["change","vs.","vs ","variance","growth"].some(function(x){return cl.includes(x)})) continue;
+      var m = cs.match(/(20[1-3]\d)/);
       if (m) yearsFound.push(parseInt(m[1]));
     }
   }
-  let numCols = 0;
-  for (const row of table.slice(2, 8)) {
-    const merged = []; let i = 0;
+  var numCols = 0;
+  for (var ri = 2; ri < Math.min(table.length, 8); ri++) {
+    var merged = [], i = 0, row = table[ri];
     while (i < row.length) {
-      const s = String(row[i] || "").trim();
+      var s = String(row[i] || "").trim();
       if (s === "$" && i + 1 < row.length) { merged.push("$" + String(row[i+1]||"").trim()); i += 2; }
       else { merged.push(s); i++; }
     }
-    const nc = merged.filter(c => cleanNum(c) !== null).length;
+    var nc = merged.filter(function(c){return cleanNum(c) !== null}).length;
     if (nc > numCols) numCols = nc;
   }
   if (!is10q) {
     if (numCols >= 2 && yearsFound.length >= 2) {
-      const maxYear = Math.max(...yearsFound);
-      return [yearsFound.lastIndexOf(maxYear), 1];
+      var maxYear = Math.max.apply(null, yearsFound);
+      var lastIdx = yearsFound.length - 1 - yearsFound.slice().reverse().indexOf(maxYear);
+      return [lastIdx, 1];
     }
     return [0, 1];
   }
   if (hasTwelve && numCols >= 6) {
-    if (yearsFound.length >= 6) return [yearsFound[yearsFound.length-1] >= yearsFound[yearsFound.length-2] ? yearsFound.length-1 : yearsFound.length-2, 1];
+    if (yearsFound.length >= 6)
+      return [yearsFound[yearsFound.length-1] >= yearsFound[yearsFound.length-2] ? yearsFound.length-1 : yearsFound.length-2, 1];
     return [numCols - 1, 1];
   }
   if (hasThree && (hasNine || hasSix)) {
-    const ann = hasNine ? 4/3 : 2;
+    var ann = hasNine ? 4/3 : 2;
     if (yearsFound.length >= 4) return [yearsFound[2] >= yearsFound[3] ? 2 : 3, ann];
     return [2, ann];
   }
   if (numCols >= 4) {
-    let ann = hasNine ? 4/3 : hasSix ? 2 : 4/3;
-    if (yearsFound.length >= 4) return [yearsFound[2] >= yearsFound[3] ? 2 : 3, ann];
+    var ann = hasNine ? 4/3 : hasSix ? 2 : 4/3;
+    if (yearsFound.length >= 4) {
+      if (yearsFound[2] >= yearsFound[3]) return [2, ann]; else return [3, ann];
+    }
     if (!hasNine && !hasSix) {
-      const ftl = fullText.toLowerCase();
+      var ftl = fullText.toLowerCase();
       if (ftl.includes("nine months") || ftl.includes("9 months ended")) ann = 4/3;
       else if (ftl.includes("six months") || ftl.includes("6 months ended")) ann = 2;
     }
@@ -294,7 +339,7 @@ function detectPeriod(table, fullText, is10q) {
   }
   if (numCols >= 2) {
     if (hasNine) return [0, 4/3]; if (hasSix) return [0, 2]; if (hasThree) return [0, 4];
-    const ftl = fullText.toLowerCase();
+    var ftl = fullText.toLowerCase();
     if (ftl.includes("nine months")) return [0, 4/3];
     if (ftl.includes("six months")) return [0, 2];
     return [0, 4];
@@ -304,84 +349,115 @@ function detectPeriod(table, fullText, is10q) {
 }
 
 function isLikelyIS(table, tt) {
-  const isCf = (["operating activities","cash flows from"].some(x => tt.includes(x)) &&
-    ["depreciation","investing activities","financing activities"].some(x => tt.includes(x)));
+  var isCf = (["operating activities","cash flows from"].some(function(x){return tt.includes(x)}) &&
+    ["depreciation","investing activities","financing activities"].some(function(x){return tt.includes(x)}));
   if (isCf) return false;
-  if (["percentage of revenue","% of revenue","period-to-period change","segment revenue"].some(x => tt.includes(x))) return false;
-  for (const row of table) {
-    if (!row) continue;
-    let label = "";
-    for (const c of row) {
-      const s = String(c || "").trim();
+  if (["percentage of revenue","% of revenue","period-to-period change","segment revenue"].some(function(x){return tt.includes(x)})) return false;
+  for (var ri = 0; ri < table.length; ri++) {
+    var row = table[ri]; if (!row) continue;
+    var label = "";
+    for (var ci = 0; ci < row.length; ci++) {
+      var s = String(row[ci] || "").trim();
       if (s && s !== "$" && !s.replace(/[,.\-()]/g, "").match(/^\d+$/)) { label = s.toLowerCase(); break; }
     }
-    if (["total revenue","total net revenue","net sales","total net sales","revenues","net revenue"].some(x => label.includes(x))) return true;
+    if (["total revenue","total net revenue","net sales","total net sales","revenues","net revenue","net interest income","earned premiums"].some(function(x){return label.includes(x)})) {
+      if (["unearned","deferred","recognition","contract","cost of revenue","other revenue"].some(function(x){return label.includes(x)})) continue;
+      return true;
+    }
   }
   return false;
 }
 
 // ── Main financial extraction ──
 function extractFinancials(allTables, scale, is10q, fullText) {
-  const r = {};
-  let bestIS = null, bestISAnn = 999;
-  for (const table of allTables) {
+  var r = {};
+
+  // Find best income statement table
+  var bestIS = null, bestISAnn = 99, bestRev = 0, bestQuality = -1;
+  for (var ti = 0; ti < allTables.length; ti++) {
+    var table = allTables[ti];
     if (!table || table.length < 3) continue;
-    const tt = table.flat().map(c => String(c || "")).join(" ").toLowerCase();
-    const hasNI = tt.includes("net income") || tt.includes("net earnings") || tt.includes("net loss");
-    if (isLikelyIS(table, tt) && hasNI && is10q) {
-      const [, ann] = detectPeriod(table, fullText, is10q);
-      if (ann < bestISAnn) { bestIS = table; bestISAnn = ann; }
+    var tt = table.map(function(row){return row.map(function(c){return String(c||"")}).join(" ")}).join(" ").toLowerCase();
+    var hasNI = tt.includes("net income") || tt.includes("net earnings") || tt.includes("net loss");
+    if (isLikelyIS(table, tt) && hasNI) {
+      var pd = detectPeriod(table, fullText, is10q); var ann = pd[1];
+      var maxRev = 0;
+      for (var ri = 0; ri < table.length; ri++) {
+        var rt = table[ri].map(function(c){return String(c||"")}).join(" ").toLowerCase();
+        if (["total revenue","revenues","earned premium","net sales","net interest income"].some(function(x){return rt.includes(x)})) {
+          for (var ci = 0; ci < table[ri].length; ci++) {
+            var v = cleanNum(String(table[ri][ci]||"")); if (v !== null && v > maxRev) maxRev = v;
+          }
+        }
+      }
+      var quality = 0;
+      var earlyText = table.slice(0,3).map(function(row){return row.map(function(c){return String(c||"")}).join(" ")}).join(" ").toLowerCase();
+      if (["consolidated statement of income","consolidated statements of income","consolidated statement of operations","consolidated statements of operations"].some(function(x){return earlyText.includes(x)})) quality += 50;
+      if (["summary","highlight","selected","overview","financial performance"].some(function(x){return earlyText.includes(x)})) quality -= 30;
+      if (["$ change","% change","variance"].some(function(x){return earlyText.includes(x)})) quality -= 25;
+      if (["segment results","consumer banking","commercial banking"].some(function(x){return tt.slice(0,300).includes(x)})) quality -= 40;
+      quality += Math.min(table.length, 50);
+      if (maxRev > 0) quality += Math.min(maxRev / 1000, 30);
+      if (quality > bestQuality + 10 || (quality >= bestQuality - 5 && (is10q ? ann < bestISAnn : table.length > (bestIS||[]).length * 1.5))) {
+        bestIS = table; bestISAnn = ann; bestRev = maxRev; bestQuality = quality;
+      }
     }
   }
 
-  for (const table of allTables) {
+  for (var ti = 0; ti < allTables.length; ti++) {
+    var table = allTables[ti];
     if (!table || table.length < 3) continue;
-    const tt = table.flat().map(c => String(c || "")).join(" ").toLowerCase();
-    let tableScale = detectScale(tt);
-    let effScale = tableScale !== 1000 ? tableScale : scale;
-    if (tableScale === 1000 && effScale >= 1000) {
-      let bigCount = 0;
-      for (const row of table.slice(1, 10))
-        for (const c of row)
-          if ((String(c||"").replace(/[^0-9]/g,"")).length >= 8) bigCount++;
-      if (bigCount >= 3) effScale = 1;
+    var tt = table.map(function(row){return row.map(function(c){return String(c||"")}).join(" ")}).join(" ").toLowerCase();
+    var tableScale = detectScale(tt);
+    var eff = tableScale !== 1000 ? tableScale : scale;
+    if (tableScale === 1000 && eff >= 1000 && !scaleIsExplicit(tt)) {
+      var bigCount = 0;
+      for (var ri = 1; ri < Math.min(table.length, 10); ri++)
+        for (var ci = 0; ci < table[ri].length; ci++)
+          if ((String(table[ri][ci]||"").replace(/[^0-9]/g,"")).length >= 7) bigCount++;
+      if (bigCount >= 2) eff = 1;
     }
-    const hasRev = isLikelyIS(table, tt);
-    const hasNI = tt.includes("net income") || tt.includes("net earnings") || tt.includes("net loss");
+    var hasRev = isLikelyIS(table, tt);
+    var hasNI = tt.includes("net income") || tt.includes("net earnings") || tt.includes("net loss");
 
     if (hasRev && hasNI) {
-      if (is10q && bestIS !== null && table !== bestIS) continue;
-      const [col, ann] = detectPeriod(table, fullText, is10q);
-      for (const [fld, lbl] of [["revenue",LABELS.rev],["operating_income",LABELS.oi],["net_income",LABELS.ni],["gross_profit",LABELS.gp]]) {
+      if (bestIS !== null && table !== bestIS) continue;
+      var pd = detectPeriod(table, fullText, is10q); var col = pd[0], ann = pd[1];
+      var fields = [["revenue",LABELS.rev],["operating_income",LABELS.oi],["net_income",LABELS.ni],["gross_profit",LABELS.gp]];
+      for (var fi = 0; fi < fields.length; fi++) {
+        var fld = fields[fi][0], lbl = fields[fi][1];
         if (!(fld in r)) {
-          let v = findValue(table, lbl, col);
-          if (v === null && col > 0) { v = findValue(table, lbl, 0); if (v !== null) { r[fld] = v * effScale * (is10q ? 4 : 1); continue; } }
-          if (v !== null) r[fld] = v * effScale * ann;
+          var excl = fld === "revenue" ? ["other revenue","other revenues","non-operating","unearned","deferred"] : null;
+          var v = findValue(table, lbl, col, excl);
+          if (v === null && col > 0) { v = findValue(table, lbl, 0, excl); if (v !== null) { r[fld] = v * eff * (is10q ? 4 : 1); continue; } }
+          if (v !== null) r[fld] = v * eff * ann;
         }
       }
       if (!("revenue_prior" in r) && "revenue" in r) {
-        const vp = findValue(table, LABELS.rev, !is10q && col > 0 ? col - 1 : col + 1);
+        var revExcl = ["other revenue","other revenues","non-operating","unearned","deferred"];
+        var priorCol = !is10q && col > 0 ? col - 1 : col + 1;
+        var vp = findValue(table, LABELS.rev, priorCol, revExcl);
         if (vp !== null && vp > 0) {
-          const cur = ann ? r.revenue / effScale / ann : r.revenue;
-          if (vp / cur > 0.1 && vp / cur < 10) r.revenue_prior = vp * effScale * ann;
+          var cur = r.revenue / eff / ann || r.revenue;
+          if (vp / cur > 0.1 && vp / cur < 10) r.revenue_prior = vp * eff * ann;
         }
       }
       if (!("eps_diluted" in r)) {
-        let v = findValue(table, ["diluted earnings per","diluted net income per","earnings per common share","diluted loss per","basic and diluted loss per","net loss per"], col);
+        var v = findValue(table, ["diluted earnings per","diluted net income per","earnings per common share","diluted loss per","basic and diluted loss per","net loss per"], col);
         if (v === null) {
-          for (const row of table) {
-            if (!row) continue;
-            const rt = row.map(c => String(c||"")).join(" ").toLowerCase();
+          for (var ri = 0; ri < table.length; ri++) {
+            var row = table[ri]; if (!row) continue;
+            var rt = row.map(function(c){return String(c||"")}).join(" ").toLowerCase();
             if (!rt.includes("diluted") || rt.includes("shares") || rt.includes("weighted")) continue;
-            const raw = row.map(c => String(c||"")).join(" ");
+            var raw = row.map(function(c){return String(c||"")}).join(" ");
             if (!raw.includes("$")) continue;
-            const merged = []; let mi = 0;
+            var merged = [], mi = 0;
             while (mi < row.length) {
-              const s = String(row[mi]||"").trim();
+              var s = String(row[mi]||"").trim();
               if (s==="$" && mi+1<row.length) { merged.push("$"+String(row[mi+1]||"").trim()); mi+=2; }
               else { merged.push(s); mi++; }
             }
-            const nums = merged.map(c => cleanNum(c)).filter(n => n !== null);
+            var nums = merged.map(function(c){return cleanNum(c)}).filter(function(n){return n !== null});
             if (nums.length > col && Math.abs(nums[col]) < 500) { v = nums[col]; break; }
             else if (nums.length && Math.abs(nums[0]) < 500) { v = nums[0]; break; }
           }
@@ -389,39 +465,73 @@ function extractFinancials(allTables, scale, is10q, fullText) {
         if (v !== null && Math.abs(v) < 500) r.eps_diluted = is10q ? v * ann : v;
       }
       if (!("shares_diluted" in r)) {
-        let v = findValue(table, LABELS.shares_dil, col);
+        var v = findValue(table, LABELS.shares_dil, col);
         if (v === null && col > 0) v = findValue(table, LABELS.shares_dil, 0);
-        if (v !== null && v > 0) r.shares_diluted = v * effScale;
+        if (v !== null && v > 0) {
+          var effShares = eff;
+          var hdr = table.slice(0,3).map(function(row){return row.map(function(c){return String(c||"")}).join(" ")}).join(" ").toLowerCase();
+          if (/shares?\s+in\s+thousands|except\s+share.*thousands/.test(hdr)) effShares = 1e3;
+          else if (/shares?\s+in\s+millions/.test(hdr)) effShares = 1e6;
+          else if (eff >= 1e6 && v > 50000 && v < 1e7) effShares = 1e3;
+          r.shares_diluted = v * effShares;
+        }
       }
     }
 
     // Balance sheet
-    const isBSCombined = tt.includes("total assets") && ["stockholders","equity","shareholders","shareowners"].some(x => tt.includes(x));
-    const isBSAssets = tt.includes("total assets") && (tt.includes("cash and cash") || tt.includes("current assets"));
-    const isBSLiabEq = !tt.includes("total assets") && ["total equity","total stockholders","total shareholders"].some(x => tt.includes(x)) && ["total liabilities","long-term debt"].some(x => tt.includes(x));
+    var isBSCombined = tt.includes("total assets") && ["stockholders","equity","shareholders","shareowners"].some(function(x){return tt.includes(x)});
+    var isBSAssets = tt.includes("total assets") && (tt.includes("cash and cash") || tt.includes("current assets"));
+    var isBSLiabEq = !tt.includes("total assets") && ["total equity","total stockholders","total shareholders"].some(function(x){return tt.includes(x)}) && ["total liabilities","long-term debt"].some(function(x){return tt.includes(x)});
     if (isBSCombined || isBSAssets || isBSLiabEq) {
-      const [bsCol] = detectPeriod(table, fullText, is10q);
-      for (const [fld, lbl] of [["total_assets",LABELS.ta],["cash",LABELS.cash],["long_term_debt",LABELS.debt],["total_liabilities",LABELS.tl],["stockholders_equity",LABELS.eq]]) {
+      var bsCol = detectPeriod(table, fullText, is10q)[0];
+      var bsFields = [["total_assets",LABELS.ta],["cash",LABELS.cash],["long_term_debt",LABELS.debt],["total_liabilities",LABELS.tl],["stockholders_equity",LABELS.eq]];
+      for (var fi = 0; fi < bsFields.length; fi++) {
+        var fld = bsFields[fi][0], lbl = bsFields[fi][1];
         if (!(fld in r)) {
-          const excl = fld === "long_term_debt" ? ["due within","current portion","current maturities"] : null;
-          let v = findValue(table, lbl, bsCol, excl);
+          var excl = fld === "long_term_debt" ? ["due within","current portion","current maturities"] : null;
+          var v = findValue(table, lbl, bsCol, excl);
           if (v === null && bsCol > 0) v = findValue(table, lbl, 0, excl);
-          if (v !== null) r[fld] = v * effScale;
+          if (v !== null) r[fld] = v * eff;
         }
+      }
+      // Convertible debt fallback
+      if (!r.convertible_debt) {
+        var v = findValue(table, LABELS.convertible_debt, bsCol);
+        if (v !== null && v > 0) r.convertible_debt = v * eff;
       }
     }
 
     // Cash flow
-    const isCF = ["operating activities","cash flows from","cash provided by"].some(x => tt.includes(x)) &&
-      ["depreciation","investing","capital","financing activities","property and equipment","net cash"].some(x => tt.includes(x));
+    var isCF = ["operating activities","cash flows from","cash provided by"].some(function(x){return tt.includes(x)}) &&
+      ["depreciation","investing","capital","financing activities","property and equipment","net cash"].some(function(x){return tt.includes(x)});
     if (isCF) {
-      const [cfCol, cfAnn] = detectPeriod(table, fullText, is10q);
-      for (const [fld, lbl] of [["operating_cf",LABELS.ocf],["capex",LABELS.capex],["depreciation",LABELS.da]]) {
+      var cfPd = detectPeriod(table, fullText, is10q); var cfCol = cfPd[0], cfAnn = cfPd[1];
+      var cfFields = [["operating_cf",LABELS.ocf],["capex",LABELS.capex],["depreciation",LABELS.da]];
+      for (var fi = 0; fi < cfFields.length; fi++) {
+        var fld = cfFields[fi][0], lbl = cfFields[fi][1];
         if (!(fld in r)) {
-          let v = findValue(table, lbl, cfCol);
+          var v = findValue(table, lbl, cfCol);
           if (v === null && cfCol > 0) v = findValue(table, lbl, 0);
-          if (v !== null) r[fld] = (fld === "capex" ? Math.abs(v) : v) * effScale * cfAnn;
+          if (v !== null) r[fld] = (fld === "capex" ? Math.abs(v) : v) * eff * cfAnn;
         }
+      }
+      // Extract intangible amortization
+      if (!("amort_intangible" in r)) {
+        var v = findValue(table, LABELS.amort_intangible, cfCol);
+        if (v === null && cfCol > 0) v = findValue(table, LABELS.amort_intangible, 0);
+        if (v !== null && v > 0) r.amort_intangible = v * eff * cfAnn;
+      }
+      // Extract SBC
+      if (!("sbc" in r)) {
+        var v = findValue(table, LABELS.sbc, cfCol);
+        if (v === null && cfCol > 0) v = findValue(table, LABELS.sbc, 0);
+        if (v !== null && v > 0) r.sbc = v * eff * cfAnn;
+      }
+      // Inventory change
+      if (!("inventory_change" in r)) {
+        var v = findValue(table, LABELS.inventory_change, cfCol);
+        if (v === null && cfCol > 0) v = findValue(table, LABELS.inventory_change, 0);
+        if (v !== null) r.inventory_change = v * eff * cfAnn;
       }
     }
   }
@@ -429,23 +539,29 @@ function extractFinancials(allTables, scale, is10q, fullText) {
   if ("operating_cf" in r && "capex" in r) r.fcf = r.operating_cf - r.capex;
   else if ("operating_cf" in r) { r.capex = 0; r.fcf = r.operating_cf; }
 
+  // Merge convertible debt
+  if ((!r.long_term_debt || r.long_term_debt === 0) && r.convertible_debt > 0)
+    r.long_term_debt = (r.long_term_debt || 0) + r.convertible_debt;
+
   // Fallback shares from NI/EPS
   if (!("shares_diluted" in r) && r.net_income && r.eps_diluted && Math.abs(r.eps_diluted) > 0.01)
     r.shares_diluted = Math.abs(r.net_income / r.eps_diluted);
 
   // Fallback shares from cover page
   if (!("shares_diluted" in r)) {
-    const ftl = fullText.toLowerCase();
-    const matches = [...ftl.matchAll(/(?:shares?\s+)?outstanding/g)];
-    for (const m of matches) {
-      const start = Math.max(0, m.index - 250);
-      const end = Math.min(ftl.length, m.index + m[0].length + 250);
-      const window = ftl.slice(start, end);
-      if (["loan","debt","principal","option","warrant","rsu","preferred","authorized"].some(x => window.includes(x))) continue;
-      if (!["common","share","class a","class b","class c","registrant"].some(x => window.includes(x))) continue;
-      const nums = [...window.matchAll(/[\d,]{7,}/g)];
-      for (const n of nums) {
-        const val = parseFloat(n[0].replace(/,/g, ""));
+    var ftl = fullText.toLowerCase();
+    var matches = [];
+    var re = /(?:shares?\s+)?outstanding/g; var m;
+    while ((m = re.exec(ftl)) !== null) matches.push(m);
+    for (var mi = 0; mi < matches.length; mi++) {
+      var start = Math.max(0, matches[mi].index - 250);
+      var end = Math.min(ftl.length, matches[mi].index + matches[mi][0].length + 250);
+      var window = ftl.slice(start, end);
+      if (["loan","debt","principal","option","warrant","rsu","preferred","authorized"].some(function(x){return window.includes(x)})) continue;
+      if (!["common","share","class a","class b","class c","registrant"].some(function(x){return window.includes(x)})) continue;
+      var numMatches = window.match(/[\d,]{7,}/g) || [];
+      for (var ni = 0; ni < numMatches.length; ni++) {
+        var val = parseFloat(numMatches[ni].replace(/,/g, ""));
         if (val > 1e6 && val < 1e11) { r.shares_diluted = val; break; }
       }
       if ("shares_diluted" in r) break;
@@ -454,1185 +570,1394 @@ function extractFinancials(allTables, scale, is10q, fullText) {
   return r;
 }
 
-// ── HTML Parser (uses browser DOMParser) ──
+// ── HTML Parser ──
 function parseHTMLFiling(content, filename) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(content, "text/html");
-  const fullText = doc.body ? doc.body.innerText || doc.body.textContent || "" : "";
-  const scale = detectScale(fullText);
-  const [form, is10q] = detectForm(fullText, filename);
-  const allTables = [];
-  for (const te of doc.querySelectorAll("table")) {
-    const rows = [];
-    for (const tr of te.querySelectorAll("tr")) {
-      const cells = [...tr.querySelectorAll("td, th")].map(td => (td.innerText || td.textContent || "").trim());
-      if (cells.some(c => c)) rows.push(cells);
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(content, "text/html");
+  var fullText = doc.body ? doc.body.innerText || doc.body.textContent || "" : "";
+  var scale = detectScale(fullText);
+  var fd = detectForm(fullText, filename); var form = fd[0], is10q = fd[1];
+  var allTables = [];
+  var tableEls = doc.querySelectorAll("table");
+  for (var ti = 0; ti < tableEls.length; ti++) {
+    var rows = [];
+    var trs = tableEls[ti].querySelectorAll("tr");
+    for (var ri = 0; ri < trs.length; ri++) {
+      var cells = []; var tds = trs[ri].querySelectorAll("td, th");
+      for (var ci = 0; ci < tds.length; ci++) cells.push((tds[ci].innerText || tds[ci].textContent || "").trim());
+      if (cells.some(function(c){return c})) rows.push(cells);
     }
     if (rows.length) allTables.push(rows);
   }
-  const r = extractFinancials(allTables, scale, is10q, fullText);
+  var r = extractFinancials(allTables, scale, is10q, fullText);
   r._form = form; r._scale = scale; r._tables = allTables.length;
-  const [sector, confidence] = detectSector(fullText);
-  r._sector = sector; r._sector_confidence = confidence;
+  var sd = detectSector(fullText);
+  r._sector = sd[0]; r._sector_confidence = sd[1];
   return [r, fullText];
 }
 
 // ═══════════════════════════════════════════════════════════
-// DCF ENGINE
+// DCF ENGINE v8 — Gordon Growth + Hybrid + Quality-Adjusted
 // ═══════════════════════════════════════════════════════════
 
-var BETAS = { hyperscaler:1.15, bank:0.90, ep:1.20, midstream:0.85, saas_tech:1.15, pharma:0.80, fintech:1.10, consumer:1.05, industrial:1.00, utility:0.55, telecom:0.80, insurance:0.75, general:1.00 };
+var BETAS = {
+  hyperscaler:1.15, bank:0.90, ep:1.20, midstream:0.85, saas_tech:1.15, pharma:0.80,
+  fintech:1.10, consumer:0.80, industrial:1.00, utility:0.55, telecom:0.80, insurance:0.95,
+  aero_defense:0.85, data_analytics:1.00, bdc:0.85, general:1.00
+};
 
-function calcWacc(sector, beta, debtRatio = 0) {
-  const rf = 0.045, erp = 0.055;
-  const b = beta || BETAS[sector] || 1.0;
-  const coe = rf + b * erp;
+var TARGET_MARGINS = {
+  hyperscaler:.20, saas_tech:.22, pharma:.18, fintech:.18, consumer:.10,
+  industrial:.12, ep:.10, midstream:.18, bank:.15, utility:.12,
+  telecom:.14, insurance:.10, aero_defense:.09, data_analytics:.30, general:.12
+};
+
+var TERMINAL_GROWTH = {
+  hyperscaler:0.035, saas_tech:0.035, pharma:0.025, fintech:0.03,
+  consumer:0.03, industrial:0.025, ep:0.015, midstream:0.02,
+  utility:0.025, telecom:0.02, insurance:0.015, bank:0.025,
+  data_analytics:0.035, aero_defense:0.025, general:0.025
+};
+
+var TERMINAL_CAPS = {
+  hyperscaler:30, saas_tech:28, pharma:18, fintech:22,
+  consumer:25, industrial:18, ep:12, midstream:12,
+  utility:22, telecom:11, insurance:10, bank:14,
+  data_analytics:30, aero_defense:20, general:20
+};
+
+function calcWacc(sector, beta, debtRatio) {
+  debtRatio = debtRatio || 0;
+  var b = beta || BETAS[sector] || 1.0;
+  var rf = 0.035, erp = 0.046;
+  var coe = rf + b * erp;
   if (sector === "bank" || sector === "insurance") return coe;
-  return coe * (1 - debtRatio) + 0.055 * 0.79 * debtRatio;
+  var cod = 0.052 * 0.79;
+  return coe * (1 - debtRatio) + cod * debtRatio;
 }
 
-function dcfFcf(fcf, growth, tm, wacc, shares, nc = 0) {
+function computeTerminalMultiple(wacc, sector, scenarioHint) {
+  scenarioHint = scenarioHint || 1.0;
+  var baseG = TERMINAL_GROWTH[sector] || 0.025;
+  var g = baseG * scenarioHint;
+  g = Math.min(g, wacc - 0.01);
+  g = Math.max(g, 0.005);
+  var tm = (1 + g) / (wacc - g);
+  var cap = TERMINAL_CAPS[sector] || 20;
+  return Math.max(6, Math.min(tm, cap));
+}
+
+function dcfFcf(fcf, growth, tm, wacc, shares, nc) {
+  nc = nc || 0;
   if (fcf <= 0 || shares <= 0) return 0;
-  let cf = fcf, pv = 0;
-  for (let i = 0; i < growth.length; i++) { cf *= (1 + growth[i]); pv += cf / Math.pow(1 + wacc, i + 1); }
+  var cf = fcf, pv = 0;
+  for (var i = 0; i < growth.length; i++) { cf *= (1 + growth[i]); pv += cf / Math.pow(1 + wacc, i + 1); }
   pv += cf * tm / Math.pow(1 + wacc, growth.length);
   return Math.max((pv + nc) / shares, 0);
 }
 
-function dcfEv(fcff, growth, tm, wacc, shares, nd = 0) {
+function dcfEv(fcff, growth, tm, wacc, shares, nd) {
+  nd = nd || 0;
   if (fcff <= 0 || shares <= 0) return 0;
-  let cf = fcff, pv = 0;
-  for (let i = 0; i < growth.length; i++) { cf *= (1 + growth[i]); pv += cf / Math.pow(1 + wacc, i + 1); }
+  var cf = fcff, pv = 0;
+  for (var i = 0; i < growth.length; i++) { cf *= (1 + growth[i]); pv += cf / Math.pow(1 + wacc, i + 1); }
   pv += cf * tm / Math.pow(1 + wacc, growth.length);
   return Math.max((pv - nd) / shares, 0);
 }
 
-function ddmBank(equity, trailingRoe, nearRoe, terminalRoe, coe, shares, payout = 0.40) {
+function dcfRevMargin(rev, growth, startMargin, targetMargin, tm, wacc, shares, nc) {
+  nc = nc || 0;
+  if (rev <= 0 || shares <= 0) return 0;
+  var r = rev, pv = 0, n = growth.length;
+  for (var i = 0; i < n; i++) {
+    r *= (1 + growth[i]);
+    var margin = startMargin + (targetMargin - startMargin) * Math.min((i + 1) / n, 1);
+    var fcfYear = r * margin;
+    if (fcfYear > 0) pv += fcfYear / Math.pow(1 + wacc, i + 1);
+  }
+  var termFcf = r * targetMargin;
+  if (termFcf > 0) pv += termFcf * tm / Math.pow(1 + wacc, n);
+  return Math.max((pv + nc) / shares, 0);
+}
+
+function ddmBank(equity, trailingRoe, nearRoe, terminalRoe, coe, shares, payout) {
+  payout = payout || 0.55;
   if (equity <= 0 || shares <= 0) return 0;
-  const retention = 1 - payout;
-  let b = equity, pv = 0;
-  for (let yr = 1; yr <= 10; yr++) {
-    let roe;
-    if (yr <= 3) roe = nearRoe;
-    else if (yr <= 7) roe = nearRoe + (terminalRoe - nearRoe) * ((yr - 3) / 4);
-    else roe = terminalRoe;
+  var retention = 1 - payout, b = equity, pv = 0;
+  for (var yr = 1; yr <= 10; yr++) {
+    var roe = yr <= 3 ? nearRoe : yr <= 7 ? nearRoe + (terminalRoe - nearRoe) * ((yr - 3) / 4) : terminalRoe;
     roe = Math.max(roe, 0.005);
-    const earnings = b * roe;
+    var earnings = b * roe;
     pv += earnings * payout / Math.pow(1 + coe, yr);
     b += earnings * retention;
   }
-  let g = Math.min(retention * terminalRoe, 0.045);
+  var g = Math.min(retention * terminalRoe, 0.035);
   if (g >= coe) g = coe - 0.005;
-  const justified = (coe > g && terminalRoe > g) ? (terminalRoe - g) / (coe - g) : 1.0;
-  const termPtbv = Math.min(Math.max(justified, 0.4), 2.5);
+  var justified = (coe > g && terminalRoe > g) ? (terminalRoe - g) / (coe - g) : 1.0;
+  var termPtbv = Math.min(Math.max(justified, 0.4), 2.0);
   pv += b * termPtbv / Math.pow(1 + coe, 10);
   return Math.max(pv / shares, 0);
 }
 
 function makeBankScenarios(trailingRoe) {
-  const bt = Math.max(Math.min(trailingRoe * 0.88, 0.14), 0.08);
+  var capped = Math.min(trailingRoe, 0.16);
+  var bt = Math.max(Math.min(capped * 0.82, 0.13), 0.08);
   return [
-    ["🔥 Rate Tailwind", 0.10, Math.min(trailingRoe + 0.02, 0.20), Math.min(bt + 0.02, 0.16)],
-    ["📈 Strong Cycle", 0.25, Math.min(trailingRoe + 0.005, 0.18), Math.min(bt + 0.01, 0.15)],
-    ["📊 Base", 0.35, trailingRoe, bt],
-    ["📉 NIM Compress", 0.20, Math.max(trailingRoe - 0.025, 0.06), Math.max(bt - 0.02, 0.08)],
-    ["💀 Credit Crisis", 0.10, Math.max(trailingRoe - 0.07, 0.03), Math.max(bt - 0.05, 0.05)],
+    ["\u{1F525} Rate Tailwind", 0.10, Math.min(capped + 0.01, 0.17), Math.min(bt + 0.015, 0.14)],
+    ["\u{1F4C8} Strong Cycle", 0.25, Math.min(capped, 0.16), Math.min(bt + 0.005, 0.135)],
+    ["\u{1F4CA} Base", 0.35, Math.min(capped * 0.95, 0.15), bt],
+    ["\u{1F4C9} NIM Compress", 0.20, Math.max(capped - 0.03, 0.06), Math.max(bt - 0.02, 0.07)],
+    ["\u{1F480} Credit Crisis", 0.10, Math.max(capped - 0.07, 0.03), Math.max(bt - 0.04, 0.05)],
   ];
 }
 
-// ── Scenarios with margin factors ──
+// ── BDC NAV Model ──
+function runBdcModel(fins, price, shares, sector) {
+  var nav = fins.stockholders_equity || 0;
+  var navPerShare = nav > 0 && shares > 0 ? nav / shares : 0;
+  var nii = fins.operating_income || fins.net_income || 0;
+  var totalIi = fins.revenue || 0;
+  var debt = fins.long_term_debt || 0;
+  var cash = fins.cash || 0;
+  var roe = nav > 0 ? nii / nav : 0;
+  var niiPerShare = shares > 0 ? nii / shares : 0;
+  var leverage = nav > 0 ? debt / nav : 0;
+  var coe = calcWacc("general", 0.85);
+  var payout = 0.90;
+  var g = Math.min((1 - payout) * roe, 0.03);
+  var justifiedPNav = (coe > g && roe > 0) ? (roe - g) / (coe - g) : 0.8;
+  var scenarios = [
+    ["\u{1F525} NII Growth", 0.10, Math.min(justifiedPNav * 1.15, 1.40)],
+    ["\u{1F4C8} Stable NII", 0.25, Math.min(justifiedPNav * 1.05, 1.25)],
+    ["\u{1F4CA} Base", 0.35, Math.min(justifiedPNav, 1.15)],
+    ["\u{1F4C9} NII Decline", 0.20, Math.max(justifiedPNav * 0.85, 0.70)],
+    ["\u{1F480} Credit Losses", 0.10, Math.max(justifiedPNav * 0.60, 0.50)],
+  ];
+  var scenResults = [], pwFv = 0;
+  for (var si = 0; si < scenarios.length; si++) {
+    var s = scenarios[si]; var fv = navPerShare * s[2];
+    var upside = price > 0 ? Math.round((fv - price) / price * 10000) / 100 : 0;
+    pwFv += s[1] * fv;
+    scenResults.push({ name:s[0], prob:s[1], fv:Math.round(fv*100)/100, upside:upside });
+  }
+  var pwUp = price > 0 ? Math.round((pwFv - price) / price * 10000) / 100 : 0;
+  var divYield = price > 0 ? niiPerShare * payout / price * 100 : 0;
+  var verdict = pwUp > 30 ? "STRONG BUY" : pwUp > 10 ? "BUY" : pwUp > -10 ? "HOLD" : pwUp > -25 ? "SELL" : "STRONG SELL";
+  return {
+    pw_fv:Math.round(pwFv*100)/100, pw_up:pwUp, verdict:verdict, wacc:coe,
+    scenarios:scenResults, trailing_growth:null, implied_fcf_growth:null, implied_rev_growth:null,
+    sanity_flags:["BDC: NAV-based valuation","P/NAV: "+(navPerShare>0?(price/navPerShare).toFixed(2):0)+"x","Div yield: "+divYield.toFixed(1)+"%","ROE: "+(roe*100).toFixed(1)+"%","Leverage: "+(leverage*100).toFixed(0)+"% of NAV"],
+    is_buyback_machine:false, sbc_haircut:0, price_paths:null,
+    market_implies:null, asset_floor:{ book_per_share:Math.round(navPerShare*100)/100, tangible_floor:Math.round(navPerShare*100)/100, book_to_price:price>0?Math.round(navPerShare/price*10000)/100:null },
+    ev_rev_multiple:null, comps_check:null,
+    inputs:{ revenue:totalIi, net_income:nii, cash_ni:nii, fcf:nii, ebitda:nii, operating_cf:nii, capex:0, depreciation:0, cash:cash, debt:debt, equity:nav, shares:shares, nav_per_share:navPerShare, fcf_reported:nii, capex_method:"BDC: NII = distributable cash" }
+  };
+}
+
 var SCENARIOS = {
   hyperscaler: [
-    ["🔥 Dominance",.10,[.25,.22,.19,.16,.14,.12,.10,.09,.08,.07],30,1.10],
-    ["📈 Strong",.25,[.18,.16,.14,.12,.10,.09,.08,.07,.06,.05],24,1.05],
-    ["📊 Base",.35,[.13,.12,.10,.09,.08,.07,.06,.05,.05,.04],20,1.00],
-    ["📉 Maturation",.20,[.06,.05,.05,.04,.04,.03,.03,.03,.03,.03],14,0.90],
-    ["💀 Disruption",.10,[.01,-.02,0,.02,.02,.02,.02,.02,.02,.02],9,0.75]],
+    ["\u{1F525} Dominance",.10,[.25,.22,.19,.16,.14,.12,.10,.09,.08,.07],30,1.10],
+    ["\u{1F4C8} Strong",.25,[.18,.16,.14,.12,.10,.09,.08,.07,.06,.05],24,1.05],
+    ["\u{1F4CA} Base",.35,[.13,.12,.10,.09,.08,.07,.06,.05,.05,.04],20,1.00],
+    ["\u{1F4C9} Maturation",.20,[.06,.05,.05,.04,.04,.03,.03,.03,.03,.03],14,0.90],
+    ["\u{1F480} Disruption",.10,[.01,-.02,0,.02,.02,.02,.02,.02,.02,.02],9,0.75]],
   saas_tech: [
-    ["🔥 Hypergrowth",.10,[.28,.24,.20,.17,.14,.11,.09,.08,.07,.06],25,1.15],
-    ["📈 Strong",.25,[.18,.16,.14,.12,.10,.08,.07,.06,.05,.05],20,1.05],
-    ["📊 Base",.35,[.11,.10,.09,.08,.07,.06,.05,.05,.04,.04],15,1.00],
-    ["📉 Decel",.20,[.03,.03,.03,.02,.02,.02,.02,.02,.02,.02],10,0.85],
-    ["💀 Disrupt",.10,[-.03,-.05,-.02,.01,.02,.02,.01,.01,.01,.01],6,0.60]],
+    ["\u{1F525} Hypergrowth",.10,[.28,.24,.20,.17,.14,.11,.09,.08,.07,.06],25,1.15],
+    ["\u{1F4C8} Strong",.25,[.18,.16,.14,.12,.10,.08,.07,.06,.05,.05],20,1.05],
+    ["\u{1F4CA} Base",.35,[.11,.10,.09,.08,.07,.06,.05,.05,.04,.04],15,1.00],
+    ["\u{1F4C9} Decel",.20,[.03,.03,.03,.02,.02,.02,.02,.02,.02,.02],10,0.85],
+    ["\u{1F480} Disrupt",.10,[-.03,-.05,-.02,.01,.02,.02,.01,.01,.01,.01],6,0.60]],
   pharma: [
-    ["🔥 Pipeline",.10,[.16,.14,.12,.10,.08,.07,.06,.05,.04,.04],16,1.10],
-    ["📈 Growth",.25,[.09,.08,.07,.06,.06,.05,.05,.04,.04,.03],13,1.00],
-    ["📊 Base",.35,[.04,.04,.04,.03,.03,.03,.02,.02,.02,.02],10,1.00],
-    ["📉 Patent",.20,[-.01,-.05,-.08,-.03,.01,.02,.02,.01,.01,.01],7,0.80],
-    ["💀 Fail",.10,[-.08,-.15,-.10,-.04,.01,.01,.01,.01,.01,.01],4,0.50]],
+    ["\u{1F525} Pipeline",.10,[.16,.14,.12,.10,.08,.07,.06,.05,.04,.04],16,1.10],
+    ["\u{1F4C8} Growth",.25,[.09,.08,.07,.06,.06,.05,.05,.04,.04,.03],13,1.00],
+    ["\u{1F4CA} Base",.35,[.04,.04,.04,.03,.03,.03,.02,.02,.02,.02],10,1.00],
+    ["\u{1F4C9} Patent",.20,[-.01,-.05,-.08,-.03,.01,.02,.02,.01,.01,.01],7,0.80],
+    ["\u{1F480} Fail",.10,[-.08,-.15,-.10,-.04,.01,.01,.01,.01,.01,.01],4,0.50]],
   ep: [
-    ["🔥 $85 Oil",.10,[.22,.18,.14,.10,.07,.05,.04,.03,.03,.02],5.0,1.10],
-    ["📈 $75 Oil",.25,[.10,.08,.06,.05,.04,.03,.03,.02,.02,.02],4.5,1.00],
-    ["📊 $65 Oil",.35,[.03,.02,.02,.02,.01,.01,.01,.01,.01,.01],4.0,1.00],
-    ["📉 $50 Oil",.20,[-.08,-.12,-.05,.01,.02,.01,.01,.01,.01,.01],3.0,0.70],
-    ["💀 $40 Crash",.10,[-.18,-.22,-.08,-.02,.01,.01,.01,.01,.01,.01],2.5,0.45]],
+    ["\u{1F525} $85 Oil",.10,[.22,.18,.14,.10,.07,.05,.04,.03,.03,.02],5.0,1.10],
+    ["\u{1F4C8} $75 Oil",.25,[.10,.08,.06,.05,.04,.03,.03,.02,.02,.02],4.5,1.00],
+    ["\u{1F4CA} $65 Oil",.35,[.03,.02,.02,.02,.01,.01,.01,.01,.01,.01],4.0,1.00],
+    ["\u{1F4C9} $50 Oil",.20,[-.08,-.12,-.05,.01,.02,.01,.01,.01,.01,.01],3.0,0.70],
+    ["\u{1F480} $40 Crash",.10,[-.18,-.22,-.08,-.02,.01,.01,.01,.01,.01,.01],2.5,0.45]],
   midstream: [
-    ["🔥 Boom",.10,[.10,.09,.07,.06,.05,.05,.04,.03,.03,.03],9,1.05],
-    ["📈 Steady",.25,[.06,.05,.05,.04,.04,.03,.03,.03,.02,.02],8,1.00],
-    ["📊 Base",.35,[.03,.03,.02,.02,.02,.02,.02,.02,.02,.02],7,1.00],
-    ["📉 Decline",.20,[-.01,-.02,-.01,.01,.01,.01,.01,.01,.01,.01],5,0.85],
-    ["💀 Transition",.10,[-.05,-.07,-.04,-.02,0,0,0,0,0,0],3,0.65]],
+    ["\u{1F525} Boom",.10,[.10,.09,.07,.06,.05,.05,.04,.03,.03,.03],9,1.05],
+    ["\u{1F4C8} Steady",.25,[.06,.05,.05,.04,.04,.03,.03,.03,.02,.02],8,1.00],
+    ["\u{1F4CA} Base",.35,[.03,.03,.02,.02,.02,.02,.02,.02,.02,.02],7,1.00],
+    ["\u{1F4C9} Decline",.20,[-.01,-.02,-.01,.01,.01,.01,.01,.01,.01,.01],5,0.85],
+    ["\u{1F480} Transition",.10,[-.05,-.07,-.04,-.02,0,0,0,0,0,0],3,0.65]],
   utility: [
-    ["🔥 Rate Growth",.10,[.08,.07,.06,.06,.05,.05,.04,.04,.04,.03],16,1.05],
-    ["📈 Constructive",.25,[.05,.05,.05,.04,.04,.04,.03,.03,.03,.03],14,1.00],
-    ["📊 Base",.35,[.03,.03,.03,.03,.03,.02,.02,.02,.02,.02],12,1.00],
-    ["📉 Headwinds",.20,[.01,.01,.02,.02,.02,.02,.02,.02,.02,.02],10,0.90],
-    ["💀 Adverse",.10,[-.01,-.02,0,.01,.01,.01,.01,.01,.01,.01],7,0.75]],
-  fintech: [
-    ["🔥 Network Expansion",.10,[.18,.16,.14,.12,.10,.09,.08,.07,.06,.06],22,1.10],
-    ["📈 Steady Growth",.25,[.12,.11,.10,.09,.08,.07,.07,.06,.06,.05],18,1.00],
-    ["📊 Base",.35,[.08,.07,.07,.06,.06,.05,.05,.05,.04,.04],15,1.00],
-    ["📉 Compression",.20,[.03,.03,.03,.03,.03,.03,.03,.02,.02,.02],10,0.80],
-    ["💀 Disruption",.10,[-.02,-.04,-.02,.01,.02,.02,.02,.02,.01,.01],6,0.55]],
-  consumer: [
-    ["🔥 Share Gains",.10,[.12,.10,.08,.07,.06,.05,.05,.04,.04,.03],14,1.10],
-    ["📈 Steady",.25,[.07,.06,.06,.05,.05,.04,.04,.04,.03,.03],12,1.00],
-    ["📊 Base",.35,[.04,.04,.03,.03,.03,.03,.03,.02,.02,.02],10,1.00],
-    ["📉 Recession",.20,[-.02,-.04,-.01,.02,.03,.03,.02,.02,.02,.02],7,0.75],
-    ["💀 Secular Decline",.10,[-.05,-.08,-.06,-.03,-.01,0,0,0,0,0],4,0.50]],
-  industrial: [
-    ["🔥 Cycle Peak",.10,[.20,.15,.10,.08,.06,.05,.04,.04,.03,.03],16,1.10],
-    ["📈 Expansion",.25,[.12,.10,.08,.06,.05,.05,.04,.04,.03,.03],13,1.00],
-    ["📊 Base",.35,[.06,.05,.05,.04,.04,.03,.03,.03,.03,.02],11,1.00],
-    ["📉 Downcycle",.20,[-.05,-.10,-.03,.04,.05,.04,.03,.03,.03,.02],8,0.75],
-    ["💀 Deep Recession",.10,[-.12,-.18,-.08,.02,.04,.04,.03,.02,.02,.02],5,0.50]],
-  telecom: [
-    ["🔥 5G/Fiber Cycle",.10,[.08,.07,.06,.05,.04,.04,.03,.03,.03,.03],12,1.05],
-    ["📈 Steady",.25,[.04,.04,.04,.03,.03,.03,.03,.02,.02,.02],10,1.00],
-    ["📊 Base",.35,[.02,.02,.02,.02,.02,.02,.02,.02,.02,.02],8,1.00],
-    ["📉 Cord-Cutting",.20,[-.01,-.02,-.01,.01,.01,.01,.01,.01,.01,.01],6,0.85],
-    ["💀 Legacy Decline",.10,[-.04,-.06,-.04,-.02,-.01,0,0,0,0,0],4,0.65]],
+    ["\u{1F525} Rate Growth",.10,[.08,.07,.06,.06,.05,.05,.04,.04,.04,.03],16,1.05],
+    ["\u{1F4C8} Constructive",.25,[.05,.05,.05,.04,.04,.04,.03,.03,.03,.03],14,1.00],
+    ["\u{1F4CA} Base",.35,[.03,.03,.03,.03,.03,.02,.02,.02,.02,.02],12,1.00],
+    ["\u{1F4C9} Headwinds",.20,[.01,.01,.02,.02,.02,.02,.02,.02,.02,.02],10,0.90],
+    ["\u{1F480} Adverse",.10,[-.01,-.02,0,.01,.01,.01,.01,.01,.01,.01],7,0.75]],
+  bank: [
+    ["\u{1F525} ROE Up",.10,[.18,.20,.22,.23,.24,.24,.23,.22,.22,.22],.20,1.0],
+    ["\u{1F4C8} Strong",.25,[.15,.16,.17,.18,.18,.18,.17,.17,.17,.17],.16,1.0],
+    ["\u{1F4CA} Base",.35,[.13,.13,.14,.14,.14,.14,.13,.13,.13,.13],.13,1.0],
+    ["\u{1F4C9} NIM Down",.20,[.10,.09,.10,.10,.11,.11,.11,.11,.11,.11],.10,1.0],
+    ["\u{1F480} Crisis",.10,[.06,.02,.04,.06,.08,.09,.10,.10,.10,.10],.08,1.0]],
   insurance: [
-    ["🔥 MLR Improve",.10,[.15,.13,.11,.09,.08,.07,.06,.05,.05,.04],16,1.10],
-    ["📈 Growth",.25,[.09,.08,.07,.06,.06,.05,.05,.04,.04,.04],13,1.00],
-    ["📊 Base",.35,[.05,.05,.04,.04,.04,.03,.03,.03,.03,.03],11,1.00],
-    ["📉 MLR Pressure",.20,[.01,0,.01,.02,.02,.02,.02,.02,.02,.02],8,0.80],
-    ["💀 Regulatory",.10,[-.03,-.05,-.03,0,.01,.01,.01,.01,.01,.01],5,0.60]],
+    ["\u{1F525} Hard Market",.10,[.06,.04,.02,-.01,-.03,-.02,.01,.02,.03,.03],10,1.05],
+    ["\u{1F4C8} Moderate Cycle",.25,[.04,.03,.01,0,-.02,-.01,.01,.02,.02,.02],9,1.00],
+    ["\u{1F4CA} Base",.35,[.02,.01,0,-.02,-.03,-.01,.01,.02,.02,.02],8,0.95],
+    ["\u{1F4C9} Soft Market",.20,[0,-.02,-.04,-.05,-.03,-.01,.01,.01,.01,.01],6,0.80],
+    ["\u{1F480} Cat Losses",.10,[-.04,-.08,-.10,-.05,-.02,.01,.02,.02,.01,.01],4,0.55]],
+  fintech: [
+    ["\u{1F525} Network Expansion",.10,[.18,.16,.14,.12,.10,.09,.08,.07,.06,.06],22,1.10],
+    ["\u{1F4C8} Steady Growth",.25,[.12,.11,.10,.09,.08,.07,.07,.06,.06,.05],18,1.00],
+    ["\u{1F4CA} Base",.35,[.08,.07,.07,.06,.06,.05,.05,.05,.04,.04],15,1.00],
+    ["\u{1F4C9} Compression",.20,[.03,.03,.03,.03,.03,.03,.03,.02,.02,.02],10,0.80],
+    ["\u{1F480} Disruption",.10,[-.02,-.04,-.02,.01,.02,.02,.02,.02,.01,.01],6,0.55]],
+  consumer: [
+    ["\u{1F525} Share Gains",.10,[.10,.09,.08,.07,.06,.05,.05,.04,.04,.04],16,1.10],
+    ["\u{1F4C8} Steady",.25,[.07,.06,.06,.05,.05,.05,.04,.04,.04,.03],14,1.00],
+    ["\u{1F4CA} Base",.35,[.05,.05,.04,.04,.04,.03,.03,.03,.03,.03],12,1.00],
+    ["\u{1F4C9} Recession",.20,[-.01,-.03,0,.02,.03,.03,.03,.02,.02,.02],8,0.80],
+    ["\u{1F480} Secular Decline",.10,[-.04,-.06,-.04,-.02,0,.01,.01,.01,.01,.01],5,0.55]],
+  industrial: [
+    ["\u{1F525} Cycle Peak",.10,[.20,.15,.10,.08,.06,.05,.04,.04,.03,.03],16,1.10],
+    ["\u{1F4C8} Expansion",.25,[.12,.10,.08,.06,.05,.05,.04,.04,.03,.03],13,1.00],
+    ["\u{1F4CA} Base",.35,[.06,.05,.05,.04,.04,.03,.03,.03,.03,.02],11,1.00],
+    ["\u{1F4C9} Downcycle",.20,[-.05,-.10,-.03,.04,.05,.04,.03,.03,.03,.02],8,0.75],
+    ["\u{1F480} Deep Recession",.10,[-.12,-.18,-.08,.02,.04,.04,.03,.02,.02,.02],5,0.50]],
+  telecom: [
+    ["\u{1F525} 5G/Fiber Cycle",.10,[.08,.07,.06,.05,.04,.04,.03,.03,.03,.03],12,1.05],
+    ["\u{1F4C8} Steady",.25,[.04,.04,.04,.03,.03,.03,.03,.02,.02,.02],10,1.00],
+    ["\u{1F4CA} Base",.35,[.02,.02,.02,.02,.02,.02,.02,.02,.02,.02],8,1.00],
+    ["\u{1F4C9} Cord-Cutting",.20,[-.01,-.02,-.01,.01,.01,.01,.01,.01,.01,.01],6,0.85],
+    ["\u{1F480} Legacy Decline",.10,[-.04,-.06,-.04,-.02,-.01,0,0,0,0,0],4,0.65]],
+  aero_defense: [
+    ["\u{1F525} Rearm Supercycle",.10,[.12,.10,.09,.08,.07,.06,.05,.05,.04,.04],18,1.10],
+    ["\u{1F4C8} Budget Growth",.25,[.07,.07,.06,.06,.05,.05,.04,.04,.04,.03],15,1.00],
+    ["\u{1F4CA} Base",.35,[.04,.04,.04,.04,.03,.03,.03,.03,.03,.03],13,1.00],
+    ["\u{1F4C9} Budget Flat",.20,[.01,.01,.02,.02,.02,.02,.02,.02,.02,.02],10,0.85],
+    ["\u{1F480} Sequestration",.10,[-.03,-.05,-.03,.01,.02,.02,.02,.02,.01,.01],7,0.65]],
+  data_analytics: [
+    ["\u{1F525} Pricing Power",.10,[.14,.13,.12,.11,.10,.09,.08,.07,.06,.06],28,1.10],
+    ["\u{1F4C8} Steady Growth",.25,[.10,.10,.09,.08,.08,.07,.06,.06,.05,.05],24,1.05],
+    ["\u{1F4CA} Base",.35,[.07,.07,.06,.06,.06,.05,.05,.05,.04,.04],20,1.00],
+    ["\u{1F4C9} Decel",.20,[.04,.04,.04,.03,.03,.03,.03,.03,.03,.03],15,0.90],
+    ["\u{1F480} Disruption",.10,[.01,-.01,.01,.02,.02,.02,.02,.02,.02,.02],10,0.70]],
   general: [
-    ["🔥 Bull Extreme",.10,[.18,.15,.13,.11,.09,.08,.07,.06,.05,.05],18,1.10],
-    ["📈 Bull Base",.25,[.10,.09,.08,.07,.06,.06,.05,.04,.04,.04],14,1.00],
-    ["📊 Base",.35,[.05,.05,.05,.04,.04,.03,.03,.03,.03,.03],12,1.00],
-    ["📉 Bear Base",.20,[.01,.01,.02,.02,.02,.02,.02,.02,.02,.02],8,0.80],
-    ["💀 Bear Extreme",.10,[-.04,-.06,-.03,.01,.01,.01,.01,.01,.01,.01],5,0.55]],
+    ["\u{1F525} Bull Extreme",.10,[.18,.15,.13,.11,.09,.08,.07,.06,.05,.05],18,1.10],
+    ["\u{1F4C8} Bull Base",.25,[.10,.09,.08,.07,.06,.06,.05,.04,.04,.04],14,1.00],
+    ["\u{1F4CA} Base",.35,[.05,.05,.05,.04,.04,.03,.03,.03,.03,.03],12,1.00],
+    ["\u{1F4C9} Bear Base",.20,[.01,.01,.02,.02,.02,.02,.02,.02,.02,.02],8,0.80],
+    ["\u{1F480} Bear Extreme",.10,[-.04,-.06,-.03,.01,.01,.01,.01,.01,.01,.01],5,0.55]],
 };
 
-var CAPEX_FACTORS = { hyperscaler:0.65, saas_tech:0.75, pharma:0.80, fintech:0.80, consumer:0.85, industrial:0.95, telecom:0.90, utility:1.10, ep:0.90, midstream:0.90, bank:1.00, insurance:0.95, general:0.85 };
+var CAPEX_FACTORS = {
+  hyperscaler:0.65, saas_tech:0.75, pharma:0.80, fintech:0.80,
+  consumer:0.85, industrial:0.95, telecom:0.90, utility:1.10,
+  ep:0.90, midstream:0.90, bank:1.00, insurance:0.95,
+  aero_defense:0.90, data_analytics:0.80, general:0.85,
+};
 
-function computeCapex(fins, sector, model = "da_proxy") {
-  const ocf = fins.operating_cf || 0, capex = fins.capex || 0, da = fins.depreciation || 0;
-  if (ocf <= 0 || capex <= 0) return null;
-  if (model === "reported") return { fcf_reported: ocf - capex, fcf_used: ocf - capex, method: "Reported" };
-  const factor = CAPEX_FACTORS[sector] || 0.85;
-  let maint = da > 0 ? da * factor : capex * Math.min(factor, 0.80);
-  maint = Math.min(maint, capex);
-  const fcfUsed = ocf - maint;
-  return { fcf_reported: ocf - capex, fcf_used: Math.max(fcfUsed, 0), method: `D&A×${factor} proxy` };
-}
+var CAPEX_WASTE = {
+  hyperscaler:0.30, saas_tech:0.20, pharma:0.25, fintech:0.15,
+  consumer:0.15, industrial:0.15, ep:0.20, midstream:0.15,
+  utility:0.10, telecom:0.20, insurance:0.05, bank:0.05,
+  aero_defense:0.15, data_analytics:0.10, general:0.20,
+};
 
 function solveImplied(fcf, price, shares, nc, wacc, tm) {
   if (fcf <= 0 || price <= 0 || shares <= 0) return null;
-  const target = price * shares - nc;
-  const pv = (g) => { let cf = fcf, s = 0; for (let t = 1; t <= 10; t++) { cf *= (1+g); s += cf/Math.pow(1+wacc,t); } return s + cf*tm/Math.pow(1+wacc,10) - target; };
-  let lo = -0.20, hi = 0.80;
-  if (pv(lo) * pv(hi) >= 0) return pv(hi) < 0 ? null : lo;
-  for (let i = 0; i < 50; i++) { const m = (lo+hi)/2; if (pv(m) > 0) hi = m; else lo = m; }
+  var target = price * shares - nc;
+  function pv(g) {
+    var cf = fcf, s = 0;
+    for (var t = 1; t <= 10; t++) { cf *= (1+g); s += cf/Math.pow(1+wacc,t); }
+    return s + cf*tm/Math.pow(1+wacc,10) - target;
+  }
+  var lo = -0.20, hi = 0.80;
+  if (pv(lo)*pv(hi) >= 0) return pv(hi) < 0 ? null : lo;
+  for (var i = 0; i < 50; i++) { var m = (lo+hi)/2; if (pv(m) > 0) hi = m; else lo = m; }
   return (lo+hi)/2;
 }
 
 function solveImpliedRev(rev, fcf, price, shares, nc, wacc, tm, sector) {
   if (rev <= 0 || fcf <= 0 || price <= 0 || shares <= 0) return null;
-  const target = price * shares - nc;
-  const cm = fcf / rev;
-  const mm = Math.max(cm, {hyperscaler:.20,saas_tech:.25,pharma:.22,fintech:.20,consumer:.10,industrial:.12,ep:.08,midstream:.15,bank:.15,utility:.12,telecom:.12,insurance:.10,general:.12}[sector] || .12);
-  const pv = (g) => { let r = rev, s = 0; for (let t=1;t<=10;t++) { r*=(1+g); const margin=cm+(mm-cm)*(t/10); s+=r*margin/Math.pow(1+wacc,t); } return s+r*mm*tm/Math.pow(1+wacc,10)-target; };
-  let lo = -0.20, hi = 0.80;
+  var target = price * shares - nc;
+  var cm = fcf / rev;
+  var mmMap = {hyperscaler:.20,saas_tech:.25,pharma:.22,fintech:.20,consumer:.10,industrial:.12,ep:.08,midstream:.15,bank:.15,utility:.12,telecom:.12,insurance:.10,aero_defense:.09,data_analytics:.30,general:.12};
+  var mm = Math.max(cm, mmMap[sector] || .12);
+  function pv(g) {
+    var r = rev, s = 0;
+    for (var t = 1; t <= 10; t++) { r *= (1+g); var margin = cm + (mm-cm)*(t/10); s += r*margin/Math.pow(1+wacc,t); }
+    return s + r*mm*tm/Math.pow(1+wacc,10) - target;
+  }
+  var lo = -0.20, hi = 0.80;
   if (pv(lo)*pv(hi) >= 0) return pv(hi) < 0 ? null : lo;
-  for (let i=0;i<50;i++) { const m=(lo+hi)/2; if(pv(m)>0) hi=m; else lo=m; }
+  for (var i = 0; i < 50; i++) { var m = (lo+hi)/2; if (pv(m) > 0) hi = m; else lo = m; }
   return (lo+hi)/2;
 }
 
-// ── Main DCF engine ──
-function runDcf(fins, price, sharesMil, sector, beta = null) {
-  const shares = sharesMil * 1e6, mcap = price * shares;
-  let fcf = fins.fcf || 0, ni = fins.net_income || 0, rev = fins.revenue || 0;
-  const oi = fins.operating_income || 0, da = fins.depreciation || 0;
-  const ocf = fins.operating_cf || 0, capex = fins.capex || 0;
-  const cash = fins.cash || 0, debt = fins.long_term_debt || 0, equity = fins.stockholders_equity || 0;
+// ── Main DCF engine (full v8 port) ──
+function runDcf(fins, price, sharesMil, sector, beta) {
+  var shares = sharesMil * 1e6, mcap = price * shares;
+  // BDC model
+  if (fins._is_bdc || sector === "bdc") return runBdcModel(fins, price, shares, sector);
+  var fcf = fins.fcf || 0, ni = fins.net_income || 0, rev = fins.revenue || 0;
+  var oi = fins.operating_income || 0, da = fins.depreciation || 0;
+  var ocf = fins.operating_cf || 0, capex = fins.capex || 0;
+  var cash = fins.cash || 0, debt = fins.long_term_debt || 0, equity = fins.stockholders_equity || 0;
+  var gp = fins.gross_profit || 0;
+  var amortIntangible = fins.amort_intangible || 0;
+  var sbc = fins.sbc || 0;
+  var inventoryChange = fins.inventory_change || 0;
 
-  const capexDer = computeCapex(fins, sector);
-  if (capexDer && capexDer.fcf_used > 0) fcf = capexDer.fcf_used;
-
-  // OCF distortion
-  if (ni > 0 && ocf > 0 && ocf < ni * 0.30 && fcf < ni * 0.15) {
-    const niFcf = ni * (["hyperscaler","saas_tech","pharma","fintech"].includes(sector) ? 0.85 : 0.70);
-    if (niFcf > fcf) { fcf = niFcf; if (capexDer) capexDer.method += " → NI fallback"; }
+  // Insurance mid-cycle
+  if (sector === "insurance" && ni > 0) {
+    var niMarginIns = rev > 0 ? ni / rev : 0;
+    var mcf = niMarginIns > 0.10 ? 0.80 : niMarginIns > 0.07 ? 0.90 : 1.0;
+    fcf = ni * mcf + da * 0.3; ocf = fcf; capex = 0;
+  }
+  // Utility rate-base
+  if (sector === "utility" && ni > 0 && capex > da * 1.5) {
+    fcf = ni + da * 0.8; ocf = fcf + capex;
   }
 
-  let ebitda = (oi && da) ? oi + da : oi ? oi * 1.25 : ocf ? ocf * 1.1 : ni ? ni / 0.65 : 0;
-  const nd = debt - cash; let nc = cash - debt;
+  // Cash NI (intangible amort addback)
+  var cashNi = ni + amortIntangible;
+
+  // WC normalization
+  var wcAdj = 0, trailingGrowthRaw = null;
+  if (rev > 0 && (fins.revenue_prior || 0) > 0)
+    trailingGrowthRaw = (rev - fins.revenue_prior) / fins.revenue_prior;
+  if (inventoryChange < 0 && rev > 0) {
+    var invBuild = Math.abs(inventoryChange), invToRev = invBuild / rev;
+    if (invToRev > 0.04 && capex > da * 1.3) {
+      var normalInvGrowth = rev * 0.02 * Math.max(trailingGrowthRaw || 0.10, 0.05);
+      wcAdj = invBuild - normalInvGrowth;
+    }
+  }
+  var normalizedOcf = ocf + wcAdj;
+
+  // Maintenance vs growth capex
+  var factor = CAPEX_FACTORS[sector] || 0.85;
+  var maintCapex;
+  if (da > 0) {
+    var realDep = amortIntangible > 0 ? da - amortIntangible : da;
+    maintCapex = Math.min(Math.max(realDep, da * 0.5) * factor, capex);
+  } else { maintCapex = capex * Math.min(factor, 0.80); }
+
+  // FCF candidates
+  var fcfReported = ocf - capex;
+  var growthCapex = Math.max(capex - maintCapex, 0);
+  var wastePct = CAPEX_WASTE[sector] || 0.20;
+  if (ocf > 0 && capex > ocf * 0.70 && ["hyperscaler","saas_tech","fintech","pharma","telecom"].includes(sector))
+    wastePct = Math.min(wastePct * Math.min(capex / ocf, 2.0), 0.45);
+  var capexWaste = growthCapex * wastePct;
+  var fcfNormalized = normalizedOcf - maintCapex - capexWaste;
+
+  var niConversion = ["hyperscaler","saas_tech","pharma","fintech","industrial"].includes(sector) ? 0.85 : 0.75;
+  var fcfCashNi = cashNi * niConversion;
+
+  // Choose best FCF
+  var fcfMethod = "";
+  var ocfQuality = cashNi > 0 ? ocf / cashNi : 0;
+  if (fcfReported > 0 && ocfQuality > 0.50) {
+    fcf = Math.max(fcfNormalized, fcfReported * 0.8); fcfMethod = "Normalized (OCF-maint)";
+  } else if (fcfNormalized > 0 && wcAdj > 0) {
+    fcf = fcfNormalized; fcfMethod = "WC-normalized";
+  } else if (cashNi > 0) {
+    fcf = fcfCashNi; fcfMethod = amortIntangible > 0 ? "Cash NI (NI+amort)" : "NI\u00D7" + niConversion + " proxy";
+  } else if (ni > 0) {
+    fcf = ni * niConversion; fcfMethod = "NI fallback";
+  }
+
+  var ebitda = (oi && da) ? oi + da : oi ? oi * 1.25 : ocf ? ocf * 1.1 : ni ? ni / 0.65 : 0;
+  var nd = debt - cash, nc = cash - debt;
+  var isPreProfit = ni < 0 && rev > 0;
 
   if (fcf <= 0) {
-    if (ni > 0) fcf = ni * (["hyperscaler","saas_tech","pharma","fintech"].includes(sector) ? 0.85 : 0.70);
-    else if (rev > 0) fcf = rev * ({hyperscaler:.15,saas_tech:.12,pharma:.10,ep:.08,utility:.10,insurance:.06}[sector] || .07);
-    else return { error: "Cannot derive FCF" };
+    if (cashNi > 0) { fcf = fcfCashNi; fcfMethod = "Cash NI fallback"; }
+    else if (ni > 0) { fcf = ni * niConversion; fcfMethod = "NI fallback"; }
+    else if (rev > 0) {
+      var proxyMargin = {hyperscaler:.15,saas_tech:.12,pharma:.10,ep:.08,utility:.10,insurance:.06}[sector] || .07;
+      if (gp > 0 && gp / rev > 0.40) proxyMargin = Math.max(proxyMargin, (gp / rev) * 0.25);
+      fcf = rev * proxyMargin; fcfMethod = "Rev\u00D7" + Math.round(proxyMargin*100) + "% proxy";
+    } else return { error: "Cannot derive FCF" };
   }
   if (fcf <= 0) return { error: "Negative FCF" };
 
-  // SBC haircut
-  let sbcHaircut = 0;
-  if (["saas_tech","hyperscaler","fintech"].includes(sector) && ni > 0 && ocf > 0) {
-    const sbcEst = Math.max(ocf - ni - da * 0.3, 0);
+  // SBC haircut (tiered)
+  var sbcHaircut = 0;
+  if (sbc > 0 && rev > 0) {
+    var sbcPctRev = sbc / rev;
+    if (sbcPctRev > 0.15) sbcHaircut = sbc * 0.35;
+    else if (sbcPctRev > 0.08) sbcHaircut = sbc * 0.55;
+    else sbcHaircut = sbc * 0.75;
+  } else if (["saas_tech","hyperscaler","fintech","data_analytics"].includes(sector) && ni > 0 && ocf > 0) {
+    var sbcEst = Math.max(ocf - ni - da * 0.3, 0);
     if (sbcEst > ni * 0.10) sbcHaircut = sbcEst * 0.50;
   }
-  if (sbcHaircut > 0 && sbcHaircut < fcf * 0.60) {
-    fcf -= sbcHaircut;
-    if (capexDer) capexDer.method += ` → SBC $${Math.round(sbcHaircut/1e6)}M`;
+  if (sbcHaircut > 0 && sbcHaircut < fcf * 0.50) {
+    fcf -= sbcHaircut; fcfMethod += " \u2192 SBC -$" + Math.round(sbcHaircut / 1e6) + "M";
   }
 
   // Buyback machine
-  const isBBM = equity < 0 && ni > 0 && fcf > 0 && ocf > debt * 0.08;
-  if (isBBM) { const maxPenalty = fcf * 3; nc = -Math.min(nd, maxPenalty); }
+  var isBBM = equity < 0 && ni > 0 && fcf > 0 && ocf > debt * 0.08;
+  if (isBBM) { nc = -Math.min(nd, fcf * 3); }
 
-  const ev = mcap + nd;
-  const dr = ev > 0 ? Math.min(debt / Math.max(ev, 1), 0.6) : 0;
-  const wacc = calcWacc(sector, beta, dr);
+  var ev = mcap + nd;
+  var dr = ev > 0 ? Math.min(debt / Math.max(ev, 1), 0.6) : 0;
+  var wacc = calcWacc(sector, beta, dr);
+
+  // Hybrid detection
+  var curFcfMargin = rev > 0 ? fcf / rev : 0;
+  var gpMargin = (gp > 0 && rev > 0) ? gp / rev : 0;
+  var cashNiMargin = (cashNi > 0 && rev > 0) ? cashNi / rev : 0;
+  var useHybrid = false, marginExpanding = false;
+  if (rev > 0 && trailingGrowthRaw !== null) {
+    if (capex > da * 1.5 && trailingGrowthRaw > 0.10 && cashNiMargin > 0.08) useHybrid = true;
+    else if (amortIntangible > 0 && (cashNiMargin - curFcfMargin) > 0.03 && trailingGrowthRaw > 0.08) { useHybrid = true; marginExpanding = true; }
+    else if (gpMargin > 0.30 && curFcfMargin < 0.12 && trailingGrowthRaw > 0.10) { useHybrid = true; marginExpanding = true; }
+    else if (wcAdj > rev * 0.03 && trailingGrowthRaw > 0.12) useHybrid = true;
+    else if (sbc > rev * 0.10 && ["saas_tech","hyperscaler","fintech"].includes(sector) && trailingGrowthRaw > 0.05) { useHybrid = true; marginExpanding = true; }
+  }
+  var fcfWeight = useHybrid ? Math.min(Math.max(ocfQuality, 0.0), 0.6) : 1.0;
+  var revWeight = 1.0 - fcfWeight;
+  var useRevMargin = isPreProfit && rev > 0 && fcf < rev * 0.05;
 
   // Bank DDM
   if (sector === "bank") {
-    let trailingRoe = equity > 0 ? ni / equity : 0.10;
+    var trailingRoe = equity > 0 ? ni / equity : 0.10;
     trailingRoe = Math.max(Math.min(trailingRoe, 0.30), 0.01);
-    const bankScens = makeBankScenarios(trailingRoe);
-    const tg = rev > 0 && (fins.revenue_prior||0) > 0 ? (rev - fins.revenue_prior) / fins.revenue_prior : null;
-    const scenResults = []; let pwFv = 0;
-    for (const [name, prob, nearRoe, termRoe] of bankScens) {
-      const fv = ddmBank(equity > 0 ? equity : mcap * 0.6, trailingRoe, nearRoe, termRoe, wacc, shares);
-      pwFv += prob * fv;
-      scenResults.push({ name, prob, fv: Math.round(fv*100)/100, upside: Math.round((fv-price)/price*10000)/100 });
+    var bankScens = makeBankScenarios(trailingRoe);
+    var tg = rev > 0 && (fins.revenue_prior||0) > 0 ? (rev - fins.revenue_prior) / fins.revenue_prior : null;
+    var scenResults = [], pwFv = 0;
+    for (var si = 0; si < bankScens.length; si++) {
+      var s = bankScens[si];
+      var fv = ddmBank(equity > 0 ? equity : mcap * 0.6, trailingRoe, s[2], s[3], wacc, shares);
+      pwFv += s[1] * fv;
+      scenResults.push({ name:s[0], prob:s[1], fv:Math.round(fv*100)/100, upside:Math.round((fv-price)/price*10000)/100 });
     }
-    const pwUp = Math.round((pwFv-price)/price*10000)/100;
-    return { pw_fv: Math.round(pwFv*100)/100, pw_up: pwUp, verdict: pwUp > 30 ? "STRONG BUY" : pwUp > 10 ? "BUY" : pwUp > -10 ? "HOLD" : pwUp > -25 ? "SELL" : "STRONG SELL", wacc, scenarios: scenResults, trailing_growth: tg, implied_fcf_growth: null, implied_rev_growth: null, inputs: { revenue:rev, net_income:ni, fcf, ebitda, operating_cf:ocf, capex, depreciation:da, cash, debt, equity, shares, capex_method: "DDM" }, sanity_flags: [], is_buyback_machine: false, sbc_haircut: 0 };
+    var pwUp = Math.round((pwFv-price)/price*10000)/100;
+    var sanity = ["Bank DDM: dividend discount model (not FCF-based)"];
+    if (trailingRoe < wacc) sanity.push("ROE " + (trailingRoe*100).toFixed(1) + "% < COE " + (wacc*100).toFixed(1) + "%");
+    return { pw_fv:Math.round(pwFv*100)/100, pw_up:pwUp, verdict:pwUp>30?"STRONG BUY":pwUp>10?"BUY":pwUp>-10?"HOLD":pwUp>-25?"SELL":"STRONG SELL", wacc:wacc, scenarios:scenResults, trailing_growth:tg, implied_fcf_growth:null, implied_rev_growth:null, sanity_flags:sanity, is_buyback_machine:false, sbc_haircut:0, price_paths:null, inputs:{revenue:rev,net_income:ni,fcf:fcf,ebitda:ebitda,operating_cf:ocf,capex:capex,depreciation:da,cash:cash,debt:debt,equity:equity,shares:shares,capex_method:"Bank DDM"}, market_implies:null, asset_floor:equity>0?{book_per_share:Math.round(equity/shares*100)/100,tangible_floor:Math.round(equity*0.85/shares*100)/100}:null, ev_rev_multiple:null, comps_check:null };
   }
 
   // Standard DCF
-  const templates = SCENARIOS[sector] || SCENARIOS.general;
-  let trailingGrowth = null;
-  if (rev > 0 && (fins.revenue_prior||0) > 0) trailingGrowth = (rev - fins.revenue_prior) / fins.revenue_prior;
-  const sectorBaseY1 = templates[2][2][0];
+  var templates = SCENARIOS[sector] || SCENARIOS.general;
+  var trailingGrowth = trailingGrowthRaw;
+  var sectorBaseY1 = templates[2][2][0];
 
-  // Dynamic probs
-  let probs = templates.map(t => t[1]);
+  // Dynamic probabilities
+  var probs = templates.map(function(t){return t[1]});
   if (rev > 0) {
-    const isLarge = rev > 10e9, isMature = trailingGrowth !== null && Math.abs(trailingGrowth) < 0.08;
-    const isHyper = trailingGrowth !== null && trailingGrowth > 0.40;
-    const isProfitable = ni / rev > 0.10;
+    var isLarge = rev > 10e9, isMature = trailingGrowth !== null && Math.abs(trailingGrowth) < 0.08;
+    var isHyper = trailingGrowth !== null && trailingGrowth > 0.40;
+    var niMargin = ni / rev, oiMargin = oi > 0 ? oi / rev : 0;
+    var isProfitable = niMargin > 0.10 || (ni > 0 && fcf > 0 && (oiMargin > 0.03 || fcf / rev > 0.015));
     if (isLarge && isMature && isProfitable) probs = [0.05, 0.20, 0.45, 0.20, 0.10];
     else if (isHyper && !isLarge && !isProfitable) probs = [0.08, 0.18, 0.30, 0.22, 0.22];
     else if (isHyper && !isLarge && isProfitable) probs = [0.12, 0.22, 0.30, 0.20, 0.16];
     else if (!isProfitable) probs = [0.05, 0.20, 0.30, 0.25, 0.20];
   }
 
-  const scenResults = []; let pwFv = 0;
-  for (let idx = 0; idx < templates.length; idx++) {
-    const [name, , pathTemplate, terminal, marginFactor] = templates[idx];
-    const prob = probs[idx];
-    let path = [...pathTemplate];
+  // Mature / stable compounder detection
+  var isMatureCompounder = rev > 50e9 && ni > 0 && (ni / rev) > 0.08 && fcf > 0 && ocf > 0 && ocf > ni * 0.5;
+  var isStableCompounder = trailingGrowth !== null && trailingGrowth > 0.02 && trailingGrowth < 0.10 && ni > 0 && fcf > 0 && rev > 3e9 && (ni/rev > 0.02 || (oi > 0 && oi/rev > 0.03) || fcf/rev > 0.02);
+  if (isStableCompounder && isLarge) probs = [0.08, 0.22, 0.45, 0.18, 0.07];
 
+  // Valuation-level probability softener
+  if (fcf > 0 && mcap > 0) {
+    var fcfYield = fcf / mcap;
+    if (fcfYield < 0.015) { probs[0] = Math.max(probs[0]-0.012,0.03); probs[1] = Math.max(probs[1]-0.012,0.10); probs[3] += 0.016; probs[4] += 0.008; }
+    else if (fcfYield < 0.025) { probs[0] = Math.max(probs[0]-0.008,0.03); probs[3] += 0.008; }
+    else if (fcfYield > 0.08) { probs[0] += 0.009; probs[1] += 0.012; probs[4] = Math.max(probs[4]-0.015,0.03); probs[3] = Math.max(probs[3]-0.006,0.05); }
+    var total = probs.reduce(function(a,b){return a+b}, 0);
+    probs = probs.map(function(p){return p/total});
+  }
+
+  // Quality-adjusted terminal multiple
+  var qualityTmMult = 1.0;
+  if (rev > 0 && fcf > 0) {
+    var investedCapital = equity > 0 ? Math.max(equity + debt - cash, rev * 0.5) : Math.max(debt, rev * 0.5);
+    var nopat = oi > 0 ? oi * 0.79 : ni;
+    var roic = investedCapital > 0 ? nopat / investedCapital : 0;
+    var fcfConversion = ni > 0 ? fcf / ni : 0;
+    var fcfMargin = fcf / rev;
+    if (roic > 0.20 && fcfConversion > 0.70) qualityTmMult = 1.30;
+    else if (roic > 0.15 && fcfConversion > 0.60) qualityTmMult = 1.15;
+    else if (ni/rev > 0.15 && fcfMargin > 0.10) qualityTmMult = 1.10;
+    if (roic < 0.05 && fcfConversion < 0.30) qualityTmMult = 0.85;
+    // High-margin terminal cap
+    var growthForCap = trailingGrowth !== null ? trailingGrowth : 0.10;
+    var maturityScore = fcfMargin * (1 - Math.min(growthForCap, 0.50));
+    if (maturityScore > 0.30 && fcfMargin > 0.40) qualityTmMult = Math.min(qualityTmMult, 1.0);
+    if (maturityScore > 0.40 && fcfMargin > 0.50) qualityTmMult = Math.min(qualityTmMult, 0.85);
+  }
+  if (equity <= 0) qualityTmMult = Math.min(qualityTmMult, 1.0);
+
+  var scenResults = [], pwFv = 0;
+  for (var idx = 0; idx < templates.length; idx++) {
+    var t = templates[idx];
+    var name = t[0], terminal = t[3], marginFactor = t[4];
+    var prob = probs[idx];
+    var path = t[2].slice();
+
+    // Growth anchoring
     if (trailingGrowth !== null) {
-      let premium = trailingGrowth - sectorBaseY1;
-      const maxPrem = Math.min(Math.max(trailingGrowth * 0.60, 0), 0.50);
-      premium = Math.max(-0.20, Math.min(premium, maxPrem));
-      const fadeSpeed = Math.abs(premium) < 0.15 ? 5 : 3;
-      if (Math.abs(premium) > 0.02) path = path.map((g, i) => g + premium * Math.max(0, 1 - i / fadeSpeed));
+      var premium = trailingGrowth - sectorBaseY1;
+      if (premium < 0 && isMatureCompounder) premium = Math.max(premium, -0.02);
+      else { var maxPrem = Math.min(Math.max(trailingGrowth * 0.60, 0.0), 0.50); premium = Math.max(-0.20, Math.min(premium, maxPrem)); }
+      // High-margin dampening
+      if (rev > 0 && fcf > 0) {
+        var fcfM = fcf / rev;
+        if (fcfM > 0.35 && premium > 0.05) premium *= (1 - Math.min((fcfM - 0.35) / 0.30, 0.60));
+      }
+      var fadeSpeed = Math.abs(premium) < 0.15 ? 5 : 3;
+      if (marginExpanding && trailingGrowth > 0.10) fadeSpeed = Math.min(fadeSpeed + 2, 8);
+      if (Math.abs(premium) > 0.02) path = path.map(function(g,i){return g + premium * Math.max(0, 1 - i / fadeSpeed)});
+    }
+    if (isStableCompounder && trailingGrowth !== null) {
+      var floorG = Math.max(trailingGrowth * 0.65, 0.015);
+      path = path.map(function(g){return Math.max(g, floorG)});
     }
 
-    const effFcf = fcf * marginFactor;
-    let fv;
-    if (["ep","midstream"].includes(sector) && nd > 0) {
-      const fcff = ebitda > 0 ? ebitda * 0.55 * marginFactor : effFcf * 1.3;
-      fv = dcfEv(fcff, path, terminal, wacc, shares, Math.max(nd, 0));
+    // Gordon Growth terminal
+    var baseTerminal = templates[2][3];
+    var scenarioHint = baseTerminal > 0 ? terminal / baseTerminal : 1.0;
+    var adjTerminal = computeTerminalMultiple(wacc, sector, scenarioHint);
+    adjTerminal = Math.max(6, Math.min(adjTerminal * qualityTmMult, adjTerminal * 1.5));
+    adjTerminal = Math.min(adjTerminal, TERMINAL_CAPS[sector] || 20);
+
+    var effFcf = fcf * marginFactor;
+    var useEvDcf = nd > mcap * 0.10 && sector !== "bank" && sector !== "insurance";
+    var fv;
+
+    if (useRevMargin) {
+      var adjEbitdaMargin = (ni + da) > 0 && rev > 0 ? (ni + da) / rev : 0;
+      var curM = Math.max(Math.min(adjEbitdaMargin, fcf > 0 && rev > 0 ? fcf / rev : 0), 0.02);
+      var tgtM = (TARGET_MARGINS[sector] || 0.12) * marginFactor;
+      fv = dcfRevMargin(rev, path, curM, tgtM, adjTerminal, wacc, shares, Math.max(nc, 0));
+    } else if (useHybrid) {
+      var fvFcf;
+      if (useEvDcf) {
+        var fcff = oi > 0 && da > 0 ? (oi * 0.79 + da - maintCapex) * marginFactor : ebitda > 0 ? ebitda * 0.55 * marginFactor : effFcf * 1.3;
+        fvFcf = dcfEv(fcff, path, adjTerminal, wacc, shares, Math.max(nd, 0));
+      } else { fvFcf = dcfFcf(effFcf, path, adjTerminal, wacc, shares, Math.max(nc, 0)); }
+      var startM = Math.max(curFcfMargin, 0.02);
+      var intermediate = Math.min(cashNiMargin * 0.85, (TARGET_MARGINS[sector]||0.12) * 1.5);
+      var tgtM = Math.max(TARGET_MARGINS[sector]||0.12, intermediate) * marginFactor;
+      var fvRev = dcfRevMargin(rev, path, startM, tgtM, adjTerminal, wacc, shares, Math.max(nc, 0));
+      fv = fvFcf * fcfWeight + fvRev * revWeight;
+    } else if (useEvDcf) {
+      var fcff = oi > 0 && da > 0 ? (oi * 0.79 + da - maintCapex) * marginFactor : ebitda > 0 ? ebitda * 0.55 * marginFactor : effFcf * 1.3;
+      fv = dcfEv(fcff, path, adjTerminal, wacc, shares, Math.max(nd, 0));
     } else {
-      fv = dcfFcf(effFcf, path, terminal, wacc, shares, Math.max(nc, 0));
+      fv = dcfFcf(effFcf, path, adjTerminal, wacc, shares, Math.max(nc, 0));
     }
+
     pwFv += prob * fv;
-    scenResults.push({ name, prob, fv: Math.round(fv*100)/100, upside: Math.round((fv-price)/price*10000)/100 });
+    scenResults.push({ name:name, prob:prob, fv:Math.round(fv*100)/100, upside:Math.round((fv-price)/price*10000)/100, path:path });
   }
 
-  const pwUp = Math.round((pwFv-price)/price*10000)/100;
-  const sanityFlags = [];
+  var pwUp = Math.round((pwFv-price)/price*10000)/100;
+
+  // Beyond-DCF: Market Implies
+  var marketImplies = null;
+  if (rev > 0 && price > 0 && shares > 0) {
+    var targetEv = mcap + nd;
+    if (targetEv > 0) {
+      var tgtMar = TARGET_MARGINS[sector] || 0.12;
+      var baseTmGG = computeTerminalMultiple(wacc, sector, 1.0);
+      function miPv(g) {
+        var r = rev, s = 0;
+        for (var t = 1; t <= 10; t++) { r *= (1+g); var cm2 = Math.max(fcf/rev||0.02,0.02); s += r*(cm2+(tgtMar-cm2)*(t/10))/Math.pow(1+wacc,t); }
+        return s + r*tgtMar*baseTmGG/Math.pow(1+wacc,10) - targetEv;
+      }
+      var lo = -0.20, hi = 1.50;
+      if (miPv(lo)*miPv(hi) < 0) {
+        for (var i = 0; i < 60; i++) { var mid = (lo+hi)/2; if (miPv(mid)>0) hi=mid; else lo=mid; }
+        marketImplies = { implied_rev_cagr:Math.round((lo+hi)/2*1000)/10, implied_ps_now:Math.round(mcap/rev*10)/10, assumed_margin:Math.round(tgtMar*1000)/10 };
+      } else if (miPv(hi) < 0) {
+        marketImplies = { implied_rev_cagr:">150%", implied_ps_now:Math.round(mcap/rev*10)/10, assumed_margin:Math.round(tgtMar*1000)/10 };
+      }
+    }
+  }
+
+  // Asset Floor
+  var assetFloor = null;
+  var ta = fins.total_assets || 0, tl = fins.total_liabilities || 0;
+  if (ta > 0 && shares > 0) {
+    var bv = equity > 0 ? equity : (ta - tl);
+    assetFloor = { book_per_share:Math.round(bv/shares*100)/100, tangible_floor:Math.round(Math.max(bv*0.7,0)/shares*100)/100, book_to_price:price>0?Math.round(bv/shares/price*10000)/100:null };
+  }
+
+  // EV/Revenue
+  var evRev = null;
+  var sectorEvRev = {hyperscaler:8,saas_tech:6,pharma:4,fintech:5,consumer:2,industrial:2,ep:2.5,midstream:3,utility:3,telecom:2.5,insurance:1.5,bank:3,aero_defense:2,data_analytics:10,general:2.5};
+  if (rev > 0 && ev > 0) {
+    var evRevNow = ev / rev, median = sectorEvRev[sector] || 2.5;
+    evRev = { current:Math.round(evRevNow*100)/100, sector_median:median, premium_pct:Math.round((evRevNow/median-1)*1000)/10, at_median_price:shares>0?Math.round((median*rev-nd)/shares*100)/100:null };
+  }
+
+  // Comps Check
+  var SECTOR_PE = {hyperscaler:32,saas_tech:35,pharma:16,fintech:28,consumer:25,industrial:20,ep:12,midstream:12,utility:20,telecom:10,insurance:11,bank:12,aero_defense:22,data_analytics:28,general:18};
+  var SECTOR_EV_EBITDA = {hyperscaler:22,saas_tech:25,pharma:14,fintech:20,consumer:15,industrial:14,ep:7,midstream:9,utility:14,telecom:7,insurance:10,bank:12,aero_defense:16,data_analytics:22,general:12};
+  var compsCheck = null;
+  var epsDil = fins.eps_diluted || (ni && shares > 0 ? ni / shares : 0);
+  if (epsDil && Math.abs(epsDil) > 0.01 && sector !== "bank") {
+    var spe = SECTOR_PE[sector] || 18;
+    var peFv = epsDil * spe;
+    var sev = SECTOR_EV_EBITDA[sector];
+    var evebitdaFv = (sev && ebitda > 0 && shares > 0) ? Math.round((ebitda * sev - nd) / shares * 100) / 100 : null;
+    compsCheck = { pe_fv:Math.round(peFv*100)/100, sector_pe:spe, current_pe:epsDil>0?Math.round(price/epsDil*10)/10:null, evebitda_fv:evebitdaFv, sector_evebitda:sev };
+    // Comps anchoring (only down)
+    var avgComp = evebitdaFv && evebitdaFv > 0 ? (peFv + evebitdaFv) / 2 : peFv;
+    var isHypergrowth2 = trailingGrowth !== null && trailingGrowth > 0.40;
+    if (avgComp > 0 && pwFv > 0 && !isHypergrowth2) {
+      var dcfVsComps = (pwFv - avgComp) / avgComp;
+      if (dcfVsComps > 0.40) {
+        var compsW = Math.min((dcfVsComps - 0.40) * 0.50, 0.30);
+        pwFv = pwFv * (1 - compsW) + avgComp * compsW;
+        pwUp = Math.round((pwFv-price)/price*10000)/100;
+      }
+    }
+  }
+
+  // Sanity flags
+  var sanityFlags = [];
   if (rev > 0 && pwFv > 0) {
-    const ips = (pwFv * shares) / rev;
-    if (ips < 1.0 && ni > 0 && ni/rev > 0.15) sanityFlags.push(`FV implies ${ips.toFixed(1)}x rev on ${Math.round(ni/rev*100)}% margin`);
-    if (ips > 50) sanityFlags.push(`FV implies ${Math.round(ips)}x rev (extreme)`);
-    if (scenResults.every(s => s.upside > 20)) sanityFlags.push("All scenarios bullish");
-    if (scenResults.every(s => s.upside < -20)) sanityFlags.push("All scenarios bearish — model may miss value drivers");
+    var ips = (pwFv * shares) / rev;
+    if (ips < 1.0 && ni > 0 && ni/rev > 0.15) sanityFlags.push("FV implies " + ips.toFixed(1) + "x rev on " + Math.round(ni/rev*100) + "% margin");
+    if (ips > 50) sanityFlags.push("FV implies " + Math.round(ips) + "x rev (extreme)");
+    if (scenResults.every(function(s){return s.upside>20})) sanityFlags.push("All scenarios bullish");
+    if (scenResults.every(function(s){return s.upside<-20})) sanityFlags.push("All scenarios bearish");
   }
+  if (useRevMargin) sanityFlags.push("Pre-profit: revenue\u00D7margin DCF");
+  if (useHybrid) sanityFlags.push("Hybrid DCF: " + Math.round(fcfWeight*100) + "% FCF + " + Math.round(revWeight*100) + "% rev-margin");
+  if (amortIntangible > 0) sanityFlags.push("Intangible amort addback: $" + Math.round(amortIntangible/1e6) + "M/yr");
 
-  const baseTm = templates[2][3];
-  const impliedFcf = solveImplied(fcf, price, shares, nc, wacc, baseTm);
-  const impliedRev = solveImpliedRev(rev, fcf, price, shares, nc, wacc, baseTm, sector);
+  if (pwUp > 30) var verdict = "STRONG BUY";
+  else if (pwUp > 10) var verdict = "BUY";
+  else if (pwUp > -10) var verdict = "HOLD";
+  else if (pwUp > -25) var verdict = "SELL";
+  else var verdict = "STRONG SELL";
+
+  var baseTm = computeTerminalMultiple(wacc, sector, 1.0);
+  var impliedFcf = solveImplied(fcf, price, shares, nc, wacc, baseTm);
+  var impliedRev = solveImpliedRev(rev, fcf, price, shares, nc, wacc, baseTm, sector);
+
+  // 10-Year price path projection
+  var pricePaths = null;
+  if (fcf > 0 && shares > 0 && price > 0 && sector !== "bank") {
+    pricePaths = { years:[], scenarios:[], pw_path:[pwFv], market_price:price };
+    for (var y = 0; y <= 10; y++) pricePaths.years.push(y);
+    var pwPathAccum = []; for (var y = 0; y < 10; y++) pwPathAccum.push(0);
+    for (var idx2 = 0; idx2 < templates.length; idx2++) {
+      var sc = scenResults[idx2]; var fv0 = sc.fv; var prob2 = sc.prob;
+      var pathT = templates[idx2][2].slice();
+      if (trailingGrowth !== null) {
+        var prem2 = trailingGrowth - sectorBaseY1;
+        if (prem2 < 0 && isMatureCompounder) prem2 = Math.max(prem2, -0.02);
+        else { var mp2 = Math.min(Math.max(trailingGrowth * 0.60, 0.0), 0.50); prem2 = Math.max(-0.20, Math.min(prem2, mp2)); }
+        if (rev > 0 && fcf > 0) { var fm2 = fcf/rev; if (fm2 > 0.35 && prem2 > 0.05) prem2 *= (1 - Math.min((fm2-0.35)/0.30, 0.60)); }
+        var fs2 = Math.abs(prem2) < 0.15 ? 5 : 3;
+        if (marginExpanding && trailingGrowth > 0.10) fs2 = Math.min(fs2+2, 8);
+        if (Math.abs(prem2) > 0.02) pathT = pathT.map(function(g,i){return g + prem2 * Math.max(0, 1 - i / fs2)});
+      }
+      if (isStableCompounder && trailingGrowth !== null) {
+        var fl2 = Math.max(trailingGrowth * 0.65, 0.015);
+        pathT = pathT.map(function(g){return Math.max(g, fl2)});
+      }
+      var yearly = [Math.round(fv0*100)/100]; var cum = fv0;
+      for (var yr = 0; yr < 10; yr++) {
+        var yrG = yr < pathT.length ? pathT[yr] : pathT[pathT.length-1];
+        cum *= (1 + yrG); yearly.push(Math.round(Math.max(cum,0)*100)/100);
+      }
+      pricePaths.scenarios.push({ name:sc.name, prob:prob2, path:yearly });
+      for (var yr = 0; yr < 10; yr++) pwPathAccum[yr] += prob2 * yearly[yr+1];
+    }
+    pricePaths.pw_path = [Math.round(pwFv*100)/100].concat(pwPathAccum.map(function(p){return Math.round(p*100)/100}));
+  }
 
   return {
-    pw_fv: Math.round(pwFv*100)/100, pw_up: pwUp,
-    verdict: pwUp > 30 ? "STRONG BUY" : pwUp > 10 ? "BUY" : pwUp > -10 ? "HOLD" : pwUp > -25 ? "SELL" : "STRONG SELL",
-    wacc, scenarios: scenResults, trailing_growth: trailingGrowth,
-    implied_fcf_growth: impliedFcf, implied_rev_growth: impliedRev,
-    sanity_flags: sanityFlags, is_buyback_machine: isBBM, sbc_haircut: sbcHaircut,
-    inputs: { revenue:rev, net_income:ni, fcf, ebitda, operating_cf:ocf, capex, depreciation:da, cash, debt, equity, shares, fcf_reported: capexDer?.fcf_reported, capex_method: capexDer?.method || "—" },
+    pw_fv:Math.round(pwFv*100)/100, pw_up:pwUp, verdict:verdict, wacc:wacc,
+    scenarios:scenResults, trailing_growth:trailingGrowth,
+    implied_fcf_growth:impliedFcf, implied_rev_growth:impliedRev,
+    sanity_flags:sanityFlags, is_buyback_machine:isBBM && equity < 0,
+    sbc_haircut:sbcHaircut, price_paths:pricePaths,
+    market_implies:marketImplies, asset_floor:assetFloor,
+    ev_rev_multiple:evRev, comps_check:compsCheck,
+    inputs: {
+      revenue:rev, net_income:ni, cash_ni:cashNi, fcf:fcf, ebitda:ebitda,
+      operating_cf:ocf, capex:capex, depreciation:da, amort_intangible:amortIntangible,
+      sbc:sbc, cash:cash, debt:debt, equity:equity, shares:shares,
+      fcf_reported:fcfReported, capex_method:useRevMargin?"Rev\u00D7Margin":fcfMethod||"\u2014",
+      wc_adjustment:wcAdj,
+      hybrid_weights:useHybrid?(Math.round(fcfWeight*100)+"/"+Math.round(revWeight*100)):null,
+    }
   };
 }
 
 // ── Format helpers ──
 function fmt(x) {
-  if (x == null) return "—";
-  const a = Math.abs(x);
-  const s = x < 0 ? "-" : "";
-  if (a >= 1e12) return `${s}$${(a/1e12).toFixed(1)}T`;
-  if (a >= 1e9) return `${s}$${(a/1e9).toFixed(1)}B`;
-  if (a >= 1e6) return `${s}$${Math.round(a/1e6)}M`;
-  if (a >= 1e3) return `${s}$${Math.round(a/1e3)}K`;
-  return `${s}$${Math.round(a)}`;
+  if (x == null) return "\u2014";
+  var a = Math.abs(x), s = x < 0 ? "-" : "";
+  if (a >= 1e12) return s+"$"+(a/1e12).toFixed(1)+"T";
+  if (a >= 1e9) return s+"$"+(a/1e9).toFixed(1)+"B";
+  if (a >= 1e6) return s+"$"+Math.round(a/1e6)+"M";
+  if (a >= 1e3) return s+"$"+Math.round(a/1e3)+"K";
+  return s+"$"+Math.round(a);
 }
-function pct(x) { return x != null ? `${(x*100).toFixed(1)}%` : "—"; }
-
-// ═══════════════════════════════════════════════════════════
-// REACT UI
-// ═══════════════════════════════════════════════════════════
-
-var verdictColor = function(v) {
-  if (v?.includes("STRONG BUY")) return "#00e676";
-  if (v?.includes("BUY")) return "#66bb6a";
-  if (v?.includes("HOLD")) return "#fdd835";
-  if (v?.includes("SELL") && v?.includes("STRONG")) return "#ff1744";
-  if (v?.includes("SELL")) return "#ef5350";
+function pct(x) { return x != null ? (x*100).toFixed(1)+"%" : "\u2014"; }
+function verdictColor(v) {
+  if (!v) return "#999";
+  if (v.includes("STRONG BUY")) return "#00e676";
+  if (v.includes("BUY")) return "#66bb6a";
+  if (v.includes("HOLD")) return "#fdd835";
+  if (v.includes("STRONG SELL")) return "#ff1744";
+  if (v.includes("SELL")) return "#ef5350";
   return "#999";
-};
+}
 
+// ═══════════════════════════════════════════════════════════
+// UI + EDGAR FETCH + XBRL + MARKET DATA
+// ═══════════════════════════════════════════════════════════
 
-
-// ═══ STATE ═══
 var currentFins = null, currentResult = null;
 var recents = JSON.parse(localStorage.getItem("cl_rec") || "[]");
 
-// Init sector dropdown
 try {
   (function(){
     var s = document.getElementById("sector");
     var h = '<option value="auto">Auto-detect</option>';
-    for (var k in SECTOR_NAMES) h += '<option value="' + k + '">' + SECTOR_NAMES[k] + '</option>';
+    for (var k in SECTOR_NAMES) h += '<option value="'+k+'">'+SECTOR_NAMES[k]+'</option>';
     s.innerHTML = h;
   })();
   renderRecents();
-  document.getElementById("ticker").addEventListener("keydown", function(e) {
-    if (e.key === "Enter") pullFiling();
-  });
+  document.getElementById("ticker").addEventListener("keydown", function(e) { if (e.key === "Enter") pullFiling(); });
+} catch(e) { console.error("Init:", e); }
 
-  // Check if running from local file
-  if (window.location.protocol === "file:") {
-    log("\u26A0 Running from local file - EDGAR pull requires hosting.", "warn");
-    log("Upload file manually, or host on GitHub Pages.", "warn");
-  }
-  } catch(initErr) { console.error("Init error:", initErr); }
+function log(msg, type) {
+  var el = document.getElementById("log");
+  var ts = new Date().toLocaleTimeString().slice(0,8);
+  var prefix = type === "ok" ? "\u2713 " : type === "err" ? "\u2717 " : "\u2192 ";
+  el.textContent += ts + " " + prefix + msg + "\n";
+  el.scrollTop = el.scrollHeight;
+  if (type === "err") el.style.color = "#ff4081";
+  else if (type === "ok") el.style.color = "#00e676";
+  else el.style.color = "#556";
+}
 
-// ═══ SEC EDGAR FETCH ═══
+function renderRecents() {
+  var el = document.getElementById("recents");
+  el.innerHTML = recents.map(function(t) {
+    return '<span class="chip" onclick="document.getElementById(\'ticker\').value=\''+t+'\';pullFiling()">'+t+'</span>';
+  }).join("");
+}
+
 var PROXY = "https://corsproxy.io/?";
 var PROXY2 = "https://api.allorigins.win/raw?url=";
 
 async function secGet(url) {
   var custom = document.getElementById("proxyUrl").value.trim();
-  if (custom) {
-    try {
-      var controller = new AbortController();
-      var timeout = setTimeout(function() { controller.abort(); }, 15000);
-      var r = await fetch(custom + "?url=" + encodeURIComponent(url), {signal: controller.signal});
-      clearTimeout(timeout);
-      if (r.ok) return r;
-      log("  Custom proxy returned " + r.status, "warn");
-    } catch(e) {
-      log("  Custom proxy failed: " + (e.name === "AbortError" ? "timeout" : e.message), "warn");
-    }
-  }
-  // Try corsproxy first (fast), then allorigins (larger files)
-  try {
-    var r = await fetch(PROXY + encodeURIComponent(url));
-    if (r.ok) return r;
-  } catch(e) {}
-  try {
-    var r2 = await fetch(PROXY2 + encodeURIComponent(url));
-    if (r2.ok) return r2;
-  } catch(e) {}
-  throw new Error("Proxy failed for: " + url.substring(0, 60));
+  if (custom) { try { var c = new AbortController(); var t = setTimeout(function(){c.abort()},15000); var r = await fetch(custom+"?url="+encodeURIComponent(url),{signal:c.signal}); clearTimeout(t); if (r.ok) return r; } catch(e){} }
+  try { var r = await fetch(PROXY+encodeURIComponent(url)); if (r.ok) return r; } catch(e){}
+  try { var r = await fetch(PROXY2+encodeURIComponent(url)); if (r.ok) return r; } catch(e){}
+  throw new Error("Proxy failed for " + url.slice(0, 60));
 }
 
 async function proxyFetch(url) {
   var custom = document.getElementById("proxyUrl").value.trim();
-  if (custom) {
-    try {
-      var controller = new AbortController();
-      var timeout = setTimeout(function() { controller.abort(); }, 10000);
-      var r = await fetch(custom + "?url=" + encodeURIComponent(url), {signal: controller.signal});
-      clearTimeout(timeout);
-      if (r.ok) return r;
-    } catch(e) {}
-  }
-  var proxies = [
-    "https://corsproxy.io/?",
-    "https://api.allorigins.win/raw?url=",
-    "https://api.codetabs.com/v1/proxy?quest="
-  ];
+  var proxies = custom ? [custom+"?url=",PROXY,PROXY2,"https://api.codetabs.com/v1/proxy?quest="] : [PROXY,PROXY2,"https://api.codetabs.com/v1/proxy?quest="];
   for (var pi = 0; pi < proxies.length; pi++) {
-    try {
-      var controller = new AbortController();
-      var timeout = setTimeout(function() { controller.abort(); }, 8000);
-      var r = await fetch(proxies[pi] + encodeURIComponent(url), {signal: controller.signal});
-      clearTimeout(timeout);
-      if (r.ok) return r;
-    } catch(e) {}
+    try { var c = new AbortController(); var t = setTimeout(function(){c.abort()},10000); var r = await fetch(proxies[pi]+encodeURIComponent(url),{signal:c.signal}); clearTimeout(t); if (r.ok) return r; } catch(e){}
   }
   throw new Error("Fetch failed");
 }
 
+// ── XBRL Company Facts ──
+async function fetchXBRLConcepts(cik, filingDate, is10K) {
+  var filingYear = parseInt(filingDate.substring(0,4));
+  var factsUrl = "https://data.sec.gov/api/xbrl/companyfacts/CIK"+cik+".json";
+  var factsData = null;
+  var proxies = [PROXY2, PROXY, "https://api.codetabs.com/v1/proxy?quest="];
+  var custom = document.getElementById("proxyUrl").value.trim();
+  if (custom) proxies.unshift(custom+"?url=");
+  for (var pi = 0; pi < proxies.length; pi++) {
+    try { var c = new AbortController(); var t = setTimeout(function(){c.abort()},20000); var resp = await fetch(proxies[pi]+encodeURIComponent(factsUrl),{signal:c.signal}); clearTimeout(t); if (resp.ok) { factsData = await resp.json(); log("Company facts loaded","ok"); break; } } catch(e){}
+  }
+  if (!factsData) throw new Error("Could not load XBRL data");
+  var gaap = (factsData.facts||{})["us-gaap"]||{};
+  var dei = (factsData.facts||{})["dei"]||{};
+  var r = {};
+
+  function getAnnual(names, withPrior) {
+    for (var ci = 0; ci < names.length; ci++) {
+      var concept = gaap[names[ci]]||dei[names[ci]]; if (!concept) continue;
+      var values = (concept.units||{}).USD||(concept.units||{}).shares||(concept.units||{})["USD/shares"]||[];
+      if (!values.length) continue;
+      var annuals = [];
+      for (var vi = 0; vi < values.length; vi++) {
+        var v = values[vi]; if (!v.end||!v.start) continue;
+        if (parseInt(v.end.substring(0,4))<filingYear-3) continue;
+        var months = Math.round((new Date(v.end)-new Date(v.start))/(30.44*86400000));
+        if (months>=10&&months<=14) annuals.push({val:v.val,end:v.end});
+      }
+      annuals.sort(function(a,b){return b.end.localeCompare(a.end)});
+      var seen={},unique=[];
+      for (var ai=0;ai<annuals.length;ai++) if(!seen[annuals[ai].end]){seen[annuals[ai].end]=true;unique.push(annuals[ai]);}
+      if (unique.length>0) { var res={current:unique[0].val}; if(withPrior&&unique.length>=2) res.prior=unique[1].val; return res; }
+    }
+    return null;
+  }
+
+  function getInstant(names) {
+    for (var ci=0;ci<names.length;ci++) {
+      var concept=gaap[names[ci]]||dei[names[ci]]; if(!concept) continue;
+      var values=(concept.units||{}).USD||[]; if(!values.length) continue;
+      var best=null,bestDate="";
+      for (var vi=0;vi<values.length;vi++) {
+        var v=values[vi]; if(!v.end) continue;
+        if(parseInt(v.end.substring(0,4))<filingYear-1) continue;
+        if(v.start&&v.start!==""){var m=Math.round((new Date(v.end)-new Date(v.start))/(30.44*86400000));if(m>2)continue;}
+        if(v.end>bestDate){best=v.val;bestDate=v.end;}
+      }
+      if(best!==null) return best;
+    }
+    return null;
+  }
+
+  function getShares(names) {
+    for (var ci=0;ci<names.length;ci++) {
+      var concept=gaap[names[ci]]||dei[names[ci]]; if(!concept) continue;
+      var values=(concept.units||{}).shares||[]; if(!values.length) continue;
+      // Multi-class handling: group by (form, end), take LARGEST per date
+      var groups = {};
+      for (var vi=0;vi<values.length;vi++) {
+        var v=values[vi]; if(!v.end||v.val<=0) continue;
+        var form=v.form||"", end=v.end;
+        var key=form+"|"+end;
+        if (!groups[key]) groups[key]={form:form,end:end,vals:[]};
+        groups[key].vals.push(v.val);
+      }
+      var best=0, bestDate="", bestFormRank=99;
+      for (var key in groups) {
+        var g = groups[key];
+        var largest = Math.max.apply(null, g.vals);
+        var formRank = (g.form==="10-K"||g.form==="10-K/A") ? 0 : (g.form==="10-Q"||g.form==="10-Q/A") ? 1 : 99;
+        var isBetter = (formRank < bestFormRank || (formRank === bestFormRank && g.end > bestDate) || (formRank <= 1 && bestFormRank > 1));
+        if (isBetter && largest > 0) { best=largest; bestDate=g.end; bestFormRank=formRank; }
+      }
+      if (best > 0) return best;
+    }
+    return null;
+  }
+
+  // Revenue
+  var revData = getAnnual(["Revenues","RevenueFromContractWithCustomerExcludingAssessedTax","SalesRevenueNet","RevenueFromContractWithCustomerIncludingAssessedTax","InterestIncomeExpenseNet","TotalRevenuesAndOtherIncome","NetInterestIncome"], true);
+  if (revData) { r.revenue = revData.current; if (revData.prior) r.revenue_prior = revData.prior; }
+  // Net Income
+  var niData = getAnnual(["NetIncomeLoss","ProfitLoss","NetIncomeLossAvailableToCommonStockholdersBasic"]);
+  if (niData) r.net_income = niData.current;
+  // Operating Income
+  var oiData = getAnnual(["OperatingIncomeLoss"]);
+  if (oiData) r.operating_income = oiData.current;
+  // Gross Profit
+  var gpData = getAnnual(["GrossProfit"]);
+  if (gpData) r.gross_profit = gpData.current;
+  // OCF
+  var ocfData = getAnnual(["NetCashProvidedByUsedInOperatingActivities","NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]);
+  if (ocfData) r.operating_cf = ocfData.current;
+  // CapEx
+  var cxData = getAnnual(["PaymentsToAcquirePropertyPlantAndEquipment","PaymentsToAcquireProductiveAssets","CapitalExpendituresIncurredButNotYetPaid"]);
+  if (cxData) r.capex = Math.abs(cxData.current);
+  // D&A
+  var daData = getAnnual(["DepreciationDepletionAndAmortization","DepreciationAndAmortization","Depreciation"]);
+  if (daData) r.depreciation = daData.current;
+  // Intangible Amort
+  var amortData = getAnnual(["AmortizationOfIntangibleAssets"]);
+  if (amortData) r.amort_intangible = amortData.current;
+  // SBC
+  var sbcData = getAnnual(["ShareBasedCompensation","AllocatedShareBasedCompensationExpense"]);
+  if (sbcData) r.sbc = sbcData.current;
+
+  // Balance sheet (instant)
+  var ta = getInstant(["Assets"]); if (ta) r.total_assets = ta;
+  var cashVal = getInstant(["CashAndCashEquivalentsAtCarryingValue","CashCashEquivalentsAndShortTermInvestments"]); if (cashVal) r.cash = cashVal;
+  var debtVal = getInstant(["LongTermDebt","LongTermDebtNoncurrent","LongTermDebtAndCapitalLeaseObligations"]); if (debtVal) r.long_term_debt = debtVal;
+  var tlVal = getInstant(["Liabilities"]); if (tlVal) r.total_liabilities = tlVal;
+  var eqVal = getInstant(["StockholdersEquity","StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]); if (eqVal) r.stockholders_equity = eqVal;
+
+  // Shares
+  var shareVal = getShares(["WeightedAverageNumberOfDilutedSharesOutstanding","CommonStockSharesOutstanding","EntityCommonStockSharesOutstanding","WeightedAverageNumberOfShareOutstandingBasicAndDiluted"]);
+  if (shareVal) r.shares_diluted = shareVal;
+
+  // EPS
+  var epsData = getAnnual(["EarningsPerShareDiluted"]);
+  if (epsData) r.eps_diluted = epsData.current;
+
+  // FCF
+  if (r.operating_cf != null && r.capex != null) r.fcf = r.operating_cf - r.capex;
+  else if (r.operating_cf != null) { r.capex = 0; r.fcf = r.operating_cf; }
+
+  // Shares fallback
+  if (!r.shares_diluted && r.net_income && r.eps_diluted && Math.abs(r.eps_diluted) > 0.01)
+    r.shares_diluted = Math.abs(r.net_income / r.eps_diluted);
+
+  var fields = Object.keys(r).length;
+  log(fields + " fields extracted from XBRL","ok");
+  return r;
+}
+
+// ── Market Data (Yahoo Finance via proxy) ──
+async function fetchMarket(ticker) {
+  log("Fetching market data for " + ticker + "...", "info");
+  var price = 0, sharesMil = 0, beta = null;
+
+  // Try Yahoo v8 chart API (most reliable)
+  try {
+    var resp = await proxyFetch("https://query1.finance.yahoo.com/v8/finance/chart/"+ticker+"?range=5d&interval=1d");
+    var data = await resp.json();
+    var meta = (data.chart||{}).result||[];
+    if (meta.length > 0) {
+      var m = meta[0].meta || {};
+      price = m.regularMarketPrice || m.previousClose || 0;
+      if (price > 0) log("Price: $" + price.toFixed(2), "ok");
+    }
+  } catch(e) { log("Chart API failed: " + e.message, "err"); }
+
+  // Try v7 quote for shares
+  try {
+    var resp2 = await proxyFetch("https://query1.finance.yahoo.com/v7/finance/quote?symbols="+ticker);
+    var data2 = await resp2.json();
+    var q = ((data2.quoteResponse||{}).result||[])[0]||{};
+    if (!price && q.regularMarketPrice) price = q.regularMarketPrice;
+    var sh = q.sharesOutstanding || 0;
+    if (!sh && q.marketCap && price) sh = q.marketCap / price;
+    if (sh > 0) sharesMil = sh / 1e6;
+  } catch(e) {}
+
+  // Try v10 for beta
+  try {
+    var resp3 = await proxyFetch("https://query2.finance.yahoo.com/v10/finance/quoteSummary/"+ticker+"?modules=defaultKeyStatistics");
+    var data3 = await resp3.json();
+    var ks = ((data3.quoteSummary||{}).result||[])[0]||{};
+    var dks = ks.defaultKeyStatistics||{};
+    beta = (dks.beta||{}).raw || null;
+    if (!sharesMil) {
+      var so = (dks.sharesOutstanding||{}).raw || 0;
+      if (so > 0) sharesMil = so / 1e6;
+    }
+  } catch(e) {}
+
+  // Prefer XBRL shares if available
+  if (currentFins && currentFins.shares_diluted && currentFins.shares_diluted > 0) {
+    sharesMil = currentFins.shares_diluted / 1e6;
+    log("Shares from XBRL: " + sharesMil.toFixed(1) + "M", "ok");
+  } else if (sharesMil > 0) {
+    log("Shares from Yahoo: " + sharesMil.toFixed(1) + "M", "ok");
+  }
+
+  if (price > 0) document.getElementById("price").value = price.toFixed(2);
+  if (sharesMil > 0) document.getElementById("shares").value = sharesMil.toFixed(1);
+  return { price: price, shares_mil: sharesMil, beta: beta };
+}
+
+// ── File handler ──
+function handleFile(event) {
+  var file = event.target.files[0]; if (!file) return;
+  log("Loading " + file.name + "...", "info");
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var result = parseHTMLFiling(e.target.result, file.name);
+      currentFins = result[0];
+      var fields = Object.keys(currentFins).filter(function(k){return k.charAt(0)!=="_"}).length;
+      document.getElementById("parseStatus").className = "st ok";
+      document.getElementById("parseStatus").textContent = "\u2713 "+currentFins._form+" | "+(SECTOR_NAMES[currentFins._sector]||"General")+" ("+currentFins._sector_confidence+") | "+fields+" fields | "+currentFins._tables+" tables";
+      document.getElementById("inputsCard").className = "card";
+      if (currentFins.shares_diluted)
+        document.getElementById("shares").value = (currentFins.shares_diluted/1e6).toFixed(1);
+      document.getElementById("sector").value = "auto";
+      log("Parsed: "+fields+" fields, "+currentFins._tables+" tables", "ok");
+    } catch(err) { log("Parse error: "+err.message, "err"); }
+  };
+  reader.readAsText(file);
+}
+
+// ── EDGAR Pull ──
 async function pullFiling() {
   var ticker = document.getElementById("ticker").value.trim().toUpperCase();
-  if (!ticker) { log("Enter a ticker", "err"); return; }
+  if (!ticker) { log("Enter a ticker","err"); return; }
   document.getElementById("ticker").value = ticker;
   var btn = document.getElementById("pullBtn");
   btn.disabled = true; btn.textContent = "PULLING...";
-  log("Starting pull for " + ticker + "...", "info");
+  document.getElementById("log").textContent = "";
+  log("Starting pull for "+ticker+"...","info");
   try {
-    // Step 1: Look up CIK
-    log("Looking up " + ticker + "...", "info");
     var r1 = await secGet("https://www.sec.gov/files/company_tickers.json");
-    var tickers = await r1.json();
-    var cik = null, name = ticker;
+    var tickers = await r1.json(); var cik = null, name = ticker;
     var vals = Object.values(tickers);
-    for (var i = 0; i < vals.length; i++) {
-      if (vals[i].ticker.toUpperCase() === ticker) {
-        cik = String(vals[i].cik_str).padStart(10, "0");
-        name = vals[i].title; break;
-      }
-    }
-    if (!cik) throw new Error("Ticker not found in SEC");
-    log("CIK " + cik + " \u2014 " + name, "ok");
+    for (var i = 0; i < vals.length; i++) { if (vals[i].ticker.toUpperCase() === ticker) { cik = String(vals[i].cik_str).padStart(10,"0"); name = vals[i].title; break; } }
+    if (!cik) throw new Error("Ticker '"+ticker+"' not found");
+    log("CIK "+cik+" \u2014 "+name,"ok");
 
-    // Step 2: Get filing metadata to determine form type and date
     var formType = document.getElementById("formType").value;
-    log("Searching for " + formType + "...", "info");
-    var r2 = await secGet("https://data.sec.gov/submissions/CIK" + cik + ".json");
+    var r2 = await secGet("https://data.sec.gov/submissions/CIK"+cik+".json");
     var subData = await r2.json();
-    var rec = (subData.filings || {}).recent || {};
-    var forms = rec.form || [], dates = rec.filingDate || [];
+    var rec = (subData.filings||{}).recent||{};
+    var forms = rec.form||[], dates = rec.filingDate||[];
     var filingInfo = null;
-    var targets = [formType, formType + "/A"];
-    for (var ti = 0; ti < targets.length && !filingInfo; ti++)
+    for (var ti = 0; ti < [formType,formType+"/A"].length && !filingInfo; ti++)
       for (var i = 0; i < forms.length; i++)
-        if (forms[i] === targets[ti]) { filingInfo = {form: forms[i], date: dates[i]}; break; }
+        if (forms[i] === [formType,formType+"/A"][ti]) { filingInfo = {form:forms[i],date:dates[i]}; break; }
     if (!filingInfo) {
       var alt = formType === "10-Q" ? "10-K" : "10-Q";
-      targets = [alt, alt + "/A"];
-      for (var ti = 0; ti < targets.length && !filingInfo; ti++)
+      for (var ti = 0; ti < [alt,alt+"/A"].length && !filingInfo; ti++)
         for (var i = 0; i < forms.length; i++)
-          if (forms[i] === targets[ti]) { filingInfo = {form: forms[i], date: dates[i], fb: true}; break; }
+          if (forms[i] === [alt,alt+"/A"][ti]) { filingInfo = {form:forms[i],date:dates[i],fb:true}; break; }
     }
     if (!filingInfo) throw new Error("No filing found");
-    var is10K = filingInfo.form.indexOf("10-K") >= 0 || filingInfo.form.indexOf("20-F") >= 0;
-    log("Found " + filingInfo.form + " filed " + filingInfo.date + (filingInfo.fb ? " (fallback)" : ""), "ok");
+    if (filingInfo.fb) log("No "+formType+" found, using "+filingInfo.form,"info");
+    log("Found "+filingInfo.form+" filed "+filingInfo.date,"ok");
 
-    // Step 3: Fetch individual XBRL concepts (small requests, ~10KB each)
-    log("Fetching financials...", "info");
-    var fins = await fetchXBRLConcepts(cik, filingInfo.date, is10K);
-    fins._form = filingInfo.form;
-    fins._scale = 1; // XBRL values are in raw dollars
-    fins._tables = 0;
-
-    // Detect sector from company name and SIC code
-    var sic = subData.sic || "";
-    var sicDesc = subData.sicDescription || "";
-    var sectorResult = detectSectorFromSIC(sic, sicDesc, name);
-    fins._sector = sectorResult[0];
-    fins._sector_confidence = sectorResult[1];
-
-    var fields = Object.keys(fins).filter(function(k) { return k.charAt(0) !== "_"; }).length;
+    log("Fetching XBRL data...","info");
+    var fins = await fetchXBRLConcepts(cik, filingInfo.date, filingInfo.form.indexOf("10-K")>=0);
+    fins._form = filingInfo.form; fins._scale = 1; fins._tables = 0;
+    var sic = subData.sic||"", sicDesc = subData.sicDescription||"";
+    var sr = detectSectorFromSIC(sic, sicDesc, name);
+    fins._sector = sr[0]; fins._sector_confidence = sr[1];
     currentFins = fins;
-
+    var fields = Object.keys(fins).filter(function(k){return k.charAt(0)!=="_"}).length;
     document.getElementById("parseStatus").className = "st ok";
-    document.getElementById("parseStatus").textContent = "\u2713 " + fins._form + " | " + (SECTOR_NAMES[fins._sector] || "General") + " | " + fields + " fields (XBRL)";
+    document.getElementById("parseStatus").textContent = "\u2713 "+fins._form+" | "+(SECTOR_NAMES[fins._sector]||"General")+" | "+fields+" fields (XBRL)";
     document.getElementById("inputsCard").className = "card";
     if (fins.shares_diluted && !document.getElementById("shares").value)
-      document.getElementById("shares").value = (fins.shares_diluted / 1e6).toFixed(1);
+      document.getElementById("shares").value = (fins.shares_diluted/1e6).toFixed(1);
     document.getElementById("sector").value = "auto";
-    log("Extracted " + fields + " fields | " + (SECTOR_NAMES[fins._sector] || "General") + " | " + filingInfo.form, "ok");
-
-    // Step 5: Fetch market data
     await fetchMarket(ticker);
-
-    // Save recent
-    recents = recents.filter(function(r) { return r !== ticker; });
-    recents.unshift(ticker); recents = recents.slice(0, 8);
-    localStorage.setItem("cl_rec", JSON.stringify(recents));
-    renderRecents();
-
-    // Auto-run DCF
+    recents = recents.filter(function(r){return r!==ticker}); recents.unshift(ticker); recents = recents.slice(0,8);
+    localStorage.setItem("cl_rec",JSON.stringify(recents)); renderRecents();
     var p = parseFloat(document.getElementById("price").value);
     var s = parseFloat(document.getElementById("shares").value);
     if (p > 0 && s > 0) runDCFUI();
-
-  } catch(e) { log("Error: " + e.message, "err"); }
+  } catch(e) { log("Error: "+e.message,"err"); }
   finally { btn.disabled = false; btn.textContent = "\u23CE PULL FROM EDGAR"; }
 }
 
+// ═══════════════════════════════════════════════════════════
+// UI RENDERING
+// ═══════════════════════════════════════════════════════════
 
-async function fetchXBRLConcepts(cik, filingDate, is10K) {
-  var filingYear = parseInt(filingDate.substring(0, 4));
-  
-  // Try to fetch full company facts (most reliable, one request)
-  var factsUrl = "https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik + ".json";
-  log("  Fetching company facts...", "info");
-  
-  var factsData = null;
-  // Try with longer timeout - this file can be 1-3MB
-  var proxies = [
-    "https://api.allorigins.win/raw?url=",
-    "https://corsproxy.io/?",
-    "https://api.codetabs.com/v1/proxy?quest="
-  ];
-  var custom = document.getElementById("proxyUrl").value.trim();
-  if (custom) proxies.unshift(custom + "?url=");
-  
-  for (var pi = 0; pi < proxies.length; pi++) {
-    try {
-      log("  Trying proxy " + (pi + 1) + "...", "info");
-      var controller = new AbortController();
-      var timeout = setTimeout(function() { controller.abort(); }, 20000);
-      var resp = await fetch(proxies[pi] + encodeURIComponent(factsUrl), {signal: controller.signal});
-      clearTimeout(timeout);
-      if (resp.ok) {
-        factsData = await resp.json();
-        log("  \u2713 Company facts loaded", "ok");
-        break;
-      }
-      log("  Proxy " + (pi + 1) + " returned " + resp.status, "warn");
-    } catch(e) {
-      log("  Proxy " + (pi + 1) + ": " + (e.name === "AbortError" ? "timeout (20s)" : e.message), "warn");
-    }
-  }
-  
-  if (!factsData) {
-    // Fallback: try individual concepts with the working proxy
-    log("  Facts failed, trying individual concepts...", "warn");
-    return await fetchXBRLConceptsIndividual(cik, filingDate, is10K);
-  }
-  
-  var gaap = (factsData.facts || {})["us-gaap"] || {};
-  var dei = (factsData.facts || {})["dei"] || {};
-  var r = {};
-  
-  function getAnnual(conceptNames, withPrior) {
-    for (var ci = 0; ci < conceptNames.length; ci++) {
-      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
-      if (!concept) continue;
-      var values = (concept.units || {}).USD || (concept.units || {}).shares || (concept.units || {})["USD/shares"] || [];
-      if (!values.length) continue;
-      var annuals = [];
-      for (var vi = 0; vi < values.length; vi++) {
-        var v = values[vi];
-        if (!v.end || !v.start) continue;
-        if (parseInt(v.end.substring(0, 4)) < filingYear - 3) continue;
-        var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
-        if (months >= 10 && months <= 14) annuals.push({val: v.val, end: v.end});
-      }
-      annuals.sort(function(a, b) { return b.end.localeCompare(a.end); });
-      // Deduplicate by end date
-      var seen = {}, unique = [];
-      for (var ai = 0; ai < annuals.length; ai++) {
-        if (!seen[annuals[ai].end]) { seen[annuals[ai].end] = true; unique.push(annuals[ai]); }
-      }
-      if (unique.length > 0) {
-        var result = {current: unique[0].val};
-        if (withPrior && unique.length >= 2) result.prior = unique[1].val;
-        return result;
-      }
-    }
-    return null;
-  }
-  
-  function getInstant(conceptNames) {
-    for (var ci = 0; ci < conceptNames.length; ci++) {
-      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
-      if (!concept) continue;
-      var values = (concept.units || {}).USD || [];
-      if (!values.length) continue;
-      var best = null, bestDate = "";
-      for (var vi = 0; vi < values.length; vi++) {
-        var v = values[vi];
-        if (!v.end) continue;
-        if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
-        var hasStart = v.start && v.start !== "";
-        if (hasStart) {
-          var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
-          if (months > 2) continue;
-        }
-        if (v.end > bestDate) { best = v.val; bestDate = v.end; }
-      }
-      if (best !== null) return best;
-    }
-    return null;
-  }
-  
-  function getShares(conceptNames) {
-    for (var ci = 0; ci < conceptNames.length; ci++) {
-      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
-      if (!concept) continue;
-      var values = (concept.units || {}).shares || [];
-      if (!values.length) continue;
-      // Prefer annual weighted average
-      var best = null, bestDate = "";
-      for (var vi = 0; vi < values.length; vi++) {
-        var v = values[vi];
-        if (!v.end || !v.start) continue;
-        if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
-        var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
-        if (months >= 10 && months <= 14 && v.end > bestDate) { best = v.val; bestDate = v.end; }
-      }
-      if (best !== null) return best;
-      // Fallback: any recent reasonable value
-      bestDate = "";
-      for (var vi = 0; vi < values.length; vi++) {
-        var v = values[vi];
-        if (!v.end) continue;
-        if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
-        if (v.val > 0 && v.val < 1e11 && v.end > bestDate) { best = v.val; bestDate = v.end; }
-      }
-      return best;
-    }
-    return null;
-  }
-  
-  // Extract all fields
-  var rev = getAnnual(["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "InterestIncomeExpenseNet"], true);
-  if (rev) { r.revenue = rev.current; if (rev.prior) r.revenue_prior = rev.prior; }
-  
-  var ni = getAnnual(["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"], false);
-  if (ni) r.net_income = ni.current;
-  
-  var oi = getAnnual(["OperatingIncomeLoss"], false);
-  if (oi) r.operating_income = oi.current;
-  
-  var gp = getAnnual(["GrossProfit"], false);
-  if (gp) r.gross_profit = gp.current;
-  
-  var ocf = getAnnual(["NetCashProvidedByOperatingActivities", "NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByOperatingActivitiesContinuingOperations"], false);
-  if (ocf) r.operating_cf = ocf.current;
-  
-  var cx = getAnnual(["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"], false);
-  if (cx) r.capex = Math.abs(cx.current);
-  
-  var da = getAnnual(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "Depreciation"], false);
-  if (da) r.depreciation = da.current;
-  
-  var cash = getInstant(["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"]);
-  if (cash !== null) r.cash = cash;
-  
-  var debt = getInstant(["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]);
-  if (debt !== null) r.long_term_debt = debt;
-  
-  var eq = getInstant(["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]);
-  if (eq !== null) r.stockholders_equity = eq;
-  
-  var ta = getInstant(["Assets"]);
-  if (ta !== null) r.total_assets = ta;
-  
-  var tl = getInstant(["Liabilities"]);
-  if (tl !== null) r.total_liabilities = tl;
-  
-  var eps = getAnnual(["EarningsPerShareDiluted"], false);
-  if (eps) r.eps_diluted = eps.current;
-  
-  var sh = getShares(["WeightedAverageNumberOfDilutedSharesOutstanding"]);
-  if (sh) r.shares_diluted = sh;
-  if (!r.shares_diluted) {
-    var sh2 = getShares(["EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"]);
-    if (sh2) r.shares_diluted = sh2;
-  }
-  if (!r.shares_diluted && r.net_income && r.eps_diluted && Math.abs(r.eps_diluted) > 0.01) {
-    r.shares_diluted = Math.abs(r.net_income / r.eps_diluted);
-  }
-  
-  // Derived
-  if (r.operating_cf && r.capex) r.fcf = r.operating_cf - r.capex;
-  else if (r.operating_cf) { r.capex = 0; r.fcf = r.operating_cf; }
-  
-  // Log what we found
-  var found = Object.keys(r).filter(function(k) { return k.charAt(0) !== "_"; });
-  for (var fi = 0; fi < found.length; fi++) {
-    var k = found[fi], v = r[k];
-    if (Math.abs(v) > 1e6) log("  \u2713 " + k + " = $" + (v / 1e9).toFixed(1) + "B", "ok");
-    else if (Math.abs(v) > 100) log("  \u2713 " + k + " = " + (v / 1e6).toFixed(1) + "M", "ok");
-    else log("  \u2713 " + k + " = " + v, "ok");
-  }
-  
-  return r;
-}
-
-// Fallback: individual concept fetches (if companyfacts too large)
-async function fetchXBRLConceptsIndividual(cik, filingDate, is10K) {
-  var filingYear = parseInt(filingDate.substring(0, 4));
-  var r = {};
-
-  var concepts = [
-    {field: "revenue", names: ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet"], type: "annual", withPrior: true},
-    {field: "net_income", names: ["NetIncomeLoss", "ProfitLoss"], type: "annual"},
-    {field: "operating_income", names: ["OperatingIncomeLoss"], type: "annual"},
-    {field: "gross_profit", names: ["GrossProfit"], type: "annual"},
-    {field: "operating_cf", names: ["NetCashProvidedByOperatingActivities", "NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByOperatingActivitiesContinuingOperations"], type: "annual"},
-    {field: "capex", names: ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets", "CapitalExpenditureDiscontinuedOperations"], type: "annual", abs: true},
-    {field: "depreciation", names: ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"], type: "annual"},
-    {field: "cash", names: ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"], type: "instant"},
-    {field: "long_term_debt", names: ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"], type: "instant"},
-    {field: "stockholders_equity", names: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"], type: "instant"},
-    {field: "total_assets", names: ["Assets"], type: "instant"},
-    {field: "total_liabilities", names: ["Liabilities"], type: "instant"},
-    {field: "eps_diluted", names: ["EarningsPerShareDiluted"], type: "perShare"},
-    {field: "shares_diluted", names: ["WeightedAverageNumberOfDilutedSharesOutstanding"], type: "shares"}
-  ];
-
-  for (var ci = 0; ci < concepts.length; ci++) {
-    var concept = concepts[ci];
-    if (r[concept.field]) continue;
-    
-    for (var ni = 0; ni < concept.names.length; ni++) {
-      if (r[concept.field]) break;
-      try {
-        var url = "https://data.sec.gov/api/xbrl/companyconcept/CIK" + cik + "/us-gaap/" + concept.names[ni] + ".json";
-        var resp = await secGet(url);
-        var data = await resp.json();
-        var units = data.units || {};
-        var values = units.USD || units.shares || units["USD/shares"] || units.pure || [];
-        if (!values || !values.length) continue;
-
-        if (concept.type === "instant") {
-          // Balance sheet: most recent instant value
-          var best = null, bestDate = "";
-          for (var vi = 0; vi < values.length; vi++) {
-            var v = values[vi];
-            if (!v.end) continue;
-            if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
-            var hasStart = v.start && v.start !== "";
-            if (hasStart) {
-              var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
-              if (months > 2) continue;
-            }
-            if (v.end > bestDate) { best = v.val; bestDate = v.end; }
-          }
-          if (best !== null) r[concept.field] = best;
-
-        } else if (concept.type === "perShare") {
-          // EPS: most recent annual (~12 month period)
-          var best = null, bestDate = "";
-          for (var vi = 0; vi < values.length; vi++) {
-            var v = values[vi];
-            if (!v.end || !v.start) continue;
-            if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
-            var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
-            if (months >= 10 && months <= 14 && v.end > bestDate) {
-              best = v.val; bestDate = v.end;
-            }
-          }
-          if (best !== null) r[concept.field] = best;
-
-        } else if (concept.type === "shares") {
-          // Shares: most recent annual period, filter out unreasonable values
-          var best = null, bestDate = "";
-          for (var vi = 0; vi < values.length; vi++) {
-            var v = values[vi];
-            if (!v.end) continue;
-            if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
-            // Prefer values with a period (weighted average) over instant
-            var hasStart = v.start && v.start !== "";
-            if (hasStart) {
-              var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
-              // Prefer annual period
-              if (months >= 10 && months <= 14 && v.end > bestDate) {
-                best = v.val; bestDate = v.end;
-              }
-            }
-          }
-          // Fallback: most recent value of any period
-          if (best === null) {
-            for (var vi = 0; vi < values.length; vi++) {
-              var v = values[vi];
-              if (!v.end) continue;
-              if (parseInt(v.end.substring(0, 4)) < filingYear - 1) continue;
-              if (v.val > 0 && v.val < 1e11 && v.end > bestDate) {
-                best = v.val; bestDate = v.end;
-              }
-            }
-          }
-          if (best !== null) r[concept.field] = best;
-
-        } else {
-          // Annual income/CF: get most recent ~12 month period AND prior year
-          var annuals = [];
-          for (var vi = 0; vi < values.length; vi++) {
-            var v = values[vi];
-            if (!v.end || !v.start) continue;
-            if (parseInt(v.end.substring(0, 4)) < filingYear - 3) continue;
-            var months = Math.round((new Date(v.end) - new Date(v.start)) / (30.44 * 86400000));
-            if (months >= 10 && months <= 14) {
-              annuals.push({val: v.val, end: v.end});
-            }
-          }
-          // Sort by end date descending
-          annuals.sort(function(a, b) { return b.end.localeCompare(a.end); });
-          // Deduplicate by end date (keep first = most recent filing)
-          var seen = {};
-          var unique = [];
-          for (var ai = 0; ai < annuals.length; ai++) {
-            if (!seen[annuals[ai].end]) {
-              seen[annuals[ai].end] = true;
-              unique.push(annuals[ai]);
-            }
-          }
-          if (unique.length > 0) {
-            r[concept.field] = concept.abs ? Math.abs(unique[0].val) : unique[0].val;
-            // Save prior year for trailing growth
-            if (concept.withPrior && unique.length >= 2) {
-              r[concept.field + "_prior"] = unique[1].val;
-            }
-          }
-        }
-      } catch(e) { continue; }
-    }
-    if (r[concept.field]) { log("  \u2713 " + concept.field + " = " + (Math.abs(r[concept.field]) > 1e6 ? "$" + (r[concept.field]/1e9).toFixed(1) + "B" : r[concept.field]), "ok"); } else if (ci === concepts.length - 1 || ci % 3 === 0) { log("  " + (ci + 1) + "/" + concepts.length + " concepts...", "info"); }
-  }
-
-  // Derived
-  if (r.operating_cf && r.capex) r.fcf = r.operating_cf - r.capex;
-  else if (r.operating_cf) { r.capex = 0; r.fcf = r.operating_cf; }
-
-  // If shares still missing, try to derive from NI / EPS
-  if (!r.shares_diluted && r.net_income && r.eps_diluted && Math.abs(r.eps_diluted) > 0.01) {
-    r.shares_diluted = Math.abs(r.net_income / r.eps_diluted);
-  }
-
-  return r;
-}
-
-function extractFromXBRL(xbrl, filingDate, is10K) {
-  var facts = xbrl.facts || {};
-  var gaap = facts["us-gaap"] || {};
-  var dei = facts["dei"] || {};
-  var r = {};
-
-  // Filing year from date
-  var filingYear = parseInt(filingDate.substring(0, 4));
-
-  // Helper: get most recent annual or quarterly value for a concept
-  function getVal(conceptNames, preferAnnual) {
-    for (var ci = 0; ci < conceptNames.length; ci++) {
-      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
-      if (!concept) continue;
-      var units = concept.units || {};
-      var values = units.USD || units.shares || units["USD/shares"] || units.pure || [];
-      if (!values.length) continue;
-
-      // Filter to recent filings and sort by end date
-      var recent = [];
-      for (var vi = 0; vi < values.length; vi++) {
-        var v = values[vi];
-        if (!v.end) continue;
-        var endYear = parseInt(v.end.substring(0, 4));
-        if (endYear < filingYear - 1) continue; // only recent
-        // For annual: want ~12 month periods (or instant for BS)
-        // For quarterly: want ~3 month periods
-        var startDate = v.start;
-        var months = 0;
-        if (startDate) {
-          var sd = new Date(startDate), ed = new Date(v.end);
-          months = Math.round((ed - sd) / (30.44 * 24 * 60 * 60 * 1000));
-        }
-        recent.push({val: v.val, end: v.end, start: v.start || "", months: months, filed: v.filed || "", form: v.form || ""});
-      }
-
-      // Sort by end date descending
-      recent.sort(function(a, b) { return b.end.localeCompare(a.end); });
-
-      if (preferAnnual) {
-        // Want ~12 month period (10-12 months) or instant (BS items)
-        for (var ri = 0; ri < recent.length; ri++) {
-          if (recent[ri].months >= 10 && recent[ri].months <= 14) return recent[ri].val;
-          if (recent[ri].months === 0 && !recent[ri].start) return recent[ri].val; // instant (BS)
-        }
-        // Fallback: just take most recent
-        if (recent.length) return recent[0].val;
-      } else {
-        // Most recent value
-        if (recent.length) return recent[0].val;
-      }
-    }
-    return null;
-  }
-
-  // Helper for balance sheet items (instant, no period)
-  function getInstant(conceptNames) {
-    for (var ci = 0; ci < conceptNames.length; ci++) {
-      var concept = gaap[conceptNames[ci]] || dei[conceptNames[ci]];
-      if (!concept) continue;
-      var units = concept.units || {};
-      var values = units.USD || [];
-      if (!values.length) continue;
-      var recent = [];
-      for (var vi = 0; vi < values.length; vi++) {
-        var v = values[vi];
-        if (!v.end) continue;
-        if (!v.start || v.start === "") recent.push({val: v.val, end: v.end}); // instant
-        else {
-          var sd2 = new Date(v.start), ed2 = new Date(v.end);
-          var m2 = Math.round((ed2 - sd2) / (30.44 * 24 * 60 * 60 * 1000));
-          if (m2 < 2) recent.push({val: v.val, end: v.end}); // near-instant
-        }
-      }
-      recent.sort(function(a, b) { return b.end.localeCompare(a.end); });
-      if (recent.length) return recent[0].val;
-    }
-    return null;
-  }
-
-  // Income statement (annual preferred)
-  var rev = getVal(["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTaxNew", "InterestIncomeExpenseNet", "TotalRevenuesAndOtherIncome", "NetRevenuesIncludingNetInterestIncome"], true);
-  if (rev) r.revenue = rev;
-
-  var ni = getVal(["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"], true);
-  if (ni) r.net_income = ni;
-
-  var oi = getVal(["OperatingIncomeLoss", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes"], true);
-  if (oi) r.operating_income = oi;
-
-  var gp = getVal(["GrossProfit"], true);
-  if (gp) r.gross_profit = gp;
-
-  // Cash flow (annual)
-  var ocf = getVal(["NetCashProvidedByOperatingActivities", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect"], true);
-  if (ocf) r.operating_cf = ocf;
-
-  var capex = getVal(["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets", "CapitalExpendituresIncurredButNotYetPaid"], true);
-  if (capex) r.capex = Math.abs(capex);
-
-  var da = getVal(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "Depreciation"], true);
-  if (da) r.depreciation = da;
-
-  // Balance sheet (instant values)
-  var cash = getInstant(["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments", "Cash"]);
-  if (cash) r.cash = cash;
-
-  var debt = getInstant(["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]);
-  if (debt) r.long_term_debt = debt;
-
-  var eq = getInstant(["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]);
-  if (eq) r.stockholders_equity = eq;
-
-  var ta = getInstant(["Assets"]);
-  if (ta) r.total_assets = ta;
-
-  var tl = getInstant(["Liabilities"]);
-  if (tl) r.total_liabilities = tl;
-
-  // Per share
-  var eps = getVal(["EarningsPerShareDiluted"], true);
-  if (eps) r.eps_diluted = eps;
-
-  // Shares
-  var shares = getVal(["WeightedAverageNumberOfDilutedSharesOutstanding", "CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"], true);
-  if (!shares) shares = getInstant(["CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"]);
-  if (shares) r.shares_diluted = shares;
-
-  // Derived
-  if (r.operating_cf && r.capex) r.fcf = r.operating_cf - r.capex;
-  else if (r.operating_cf) { r.capex = 0; r.fcf = r.operating_cf; }
-
-  // Prior year revenue for trailing growth
-  // Look for revenue from ~12 months before the most recent
-  if (r.revenue) {
-    var revConcepts = ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueNet", "InterestIncomeExpenseNet"];
-    for (var ci = 0; ci < revConcepts.length; ci++) {
-      var concept = gaap[revConcepts[ci]];
-      if (!concept) continue;
-      var values = (concept.units || {}).USD || [];
-      var annuals = [];
-      for (var vi = 0; vi < values.length; vi++) {
-        var v = values[vi];
-        if (!v.start || !v.end) continue;
-        var sd3 = new Date(v.start), ed3 = new Date(v.end);
-        var m3 = Math.round((ed3 - sd3) / (30.44 * 24 * 60 * 60 * 1000));
-        if (m3 >= 10 && m3 <= 14) annuals.push({val: v.val, end: v.end});
-      }
-      annuals.sort(function(a, b) { return b.end.localeCompare(a.end); });
-      if (annuals.length >= 2) {
-        r.revenue_prior = annuals[1].val;
-        break;
-      }
-    }
-  }
-
-  return r;
-}
-
-function detectSectorFromSIC(sic, sicDesc, companyName) {
-  var s = (sic + " " + sicDesc + " " + companyName).toLowerCase();
-  if (sic >= "6020" && sic <= "6099" || s.indexOf("bank") >= 0 || s.indexOf("depository") >= 0) return ["bank", "high"];
-  if (sic >= "6311" && sic <= "6399" || s.indexOf("insurance") >= 0) return ["insurance", "high"];
-  if (sic >= "4911" && sic <= "4941" || s.indexOf("electric") >= 0 && s.indexOf("utility") >= 0) return ["utility", "high"];
-  if (sic >= "1311" && sic <= "1389" || s.indexOf("crude") >= 0 || s.indexOf("petroleum") >= 0) return ["ep", "high"];
-  if (sic >= "4600" && sic <= "4699" || s.indexOf("pipeline") >= 0) return ["midstream", "medium"];
-  if (sic >= "2830" && sic <= "2836" || s.indexOf("pharmaceutical") >= 0 || s.indexOf("biotech") >= 0) return ["pharma", "high"];
-  if (sic >= "4800" && sic <= "4899" || s.indexOf("telecom") >= 0 || s.indexOf("wireless") >= 0) return ["telecom", "medium"];
-  if (sic === "7372" || sic === "7371" || s.indexOf("software") >= 0 || s.indexOf("saas") >= 0) return ["saas_tech", "medium"];
-  if (sic === "7374" || s.indexOf("data process") >= 0 || s.indexOf("cloud") >= 0 || s.indexOf("amazon") >= 0 || s.indexOf("alphabet") >= 0 || s.indexOf("microsoft") >= 0 || s.indexOf("meta platform") >= 0) return ["hyperscaler", "medium"];
-  if (sic >= "6150" && sic <= "6199" || s.indexOf("payment") >= 0 || s.indexOf("fintech") >= 0 || s.indexOf("visa") >= 0 || s.indexOf("mastercard") >= 0) return ["fintech", "medium"];
-  if (sic >= "5200" && sic <= "5999" || s.indexOf("retail") >= 0 || s.indexOf("store") >= 0) return ["consumer", "medium"];
-  if (sic >= "3500" && sic <= "3699" || sic >= "3700" && sic <= "3799" || s.indexOf("semiconductor") >= 0) return ["industrial", "medium"];
-  return ["general", "low"];
-}
-
-async function fetchMarket(ticker) {
-  log("Fetching market data...", "info");
-  var price = 0, shares = 0, beta = null, name = ticker;
-  try {
-    var r = await proxyFetch("https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + ticker);
-    var d = await r.json(); var q = ((d.quoteResponse || {}).result || [])[0] || {};
-    price = q.regularMarketPrice || 0; shares = q.sharesOutstanding || 0;
-    name = q.shortName || q.longName || ticker;
-    if (!shares && q.marketCap && price) shares = q.marketCap / price;
-  } catch(e) {}
-  try {
-    var r2 = await proxyFetch("https://query2.finance.yahoo.com/v10/finance/quoteSummary/" + ticker + "?modules=price,defaultKeyStatistics");
-    var d2 = await r2.json(); var mods = ((d2.quoteSummary || {}).result || [])[0] || {};
-    var pm = mods.price || {}, ks = mods.defaultKeyStatistics || {};
-    if (!price) price = ((pm.regularMarketPrice || {}).raw) || 0;
-    if (!shares) shares = ((ks.sharesOutstanding || {}).raw) || ((pm.sharesOutstanding || {}).raw) || 0;
-    if (!shares && price) { var mc = ((pm.marketCap || {}).raw) || 0; if (mc) shares = mc / price; }
-    beta = ((ks.beta || {}).raw) || beta;
-  } catch(e) {}
-  if (!price) { try {
-    var r3 = await proxyFetch("https://query1.finance.yahoo.com/v8/finance/chart/" + ticker + "?range=1d&interval=1d");
-    var d3 = await r3.json(); price = ((((d3.chart || {}).result || [])[0] || {}).meta || {}).regularMarketPrice || 0;
-  } catch(e) {} }
-  if (price > 0) { document.getElementById("price").value = price.toFixed(2); log(name + " $" + price.toFixed(2), "ok"); }
-  else log("Price fetch failed - enter manually", "warn");
-  if (shares > 0) { document.getElementById("shares").value = (shares / 1e6).toFixed(1); log("Shares: " + (shares / 1e6).toFixed(1) + "M", "ok"); }
-  else if (currentFins && currentFins.shares_diluted) { document.getElementById("shares").value = (currentFins.shares_diluted / 1e6).toFixed(1); log("Shares from filing: " + (currentFins.shares_diluted / 1e6).toFixed(1) + "M", "info"); }
-  else log("Shares not found - enter manually", "warn");
-  if (beta) log("Beta=" + beta.toFixed(2), "info");
-}
-
-// ═══ FILE & CONTENT ═══
-function handleFile(e) {
-  var f = e.target.files[0]; if (!f) return;
-  var reader = new FileReader();
-  reader.onload = function(ev) { loadContent(ev.target.result, f.name); };
-  reader.readAsText(f);
-}
-
-function loadContent(content, filename) {
-  try {
-    var result = parseHTMLFiling(content, filename);
-    var parsed = result[0];
-    currentFins = parsed;
-    var fields = Object.keys(parsed).filter(function(k) { return k.charAt(0) !== "_"; }).length;
-    document.getElementById("parseStatus").className = "st ok";
-    document.getElementById("parseStatus").textContent = "\u2713 " + parsed._form + " | " + (SECTOR_NAMES[parsed._sector] || "General") + " | " + fields + " fields | " + parsed._tables + " tables";
-    document.getElementById("inputsCard").className = "card";
-    if (parsed.shares_diluted && !document.getElementById("shares").value)
-      document.getElementById("shares").value = (parsed.shares_diluted / 1e6).toFixed(1);
-    document.getElementById("sector").value = "auto";
-    log("Parsed: " + parsed._form + " | " + (SECTOR_NAMES[parsed._sector] || "General") + " (" + parsed._sector_confidence + ") | " + fields + " fields", "ok");
-  } catch(e) {
-    document.getElementById("parseStatus").className = "st err";
-    document.getElementById("parseStatus").textContent = "Parse error: " + e.message;
-    log("Parse error: " + e.message, "err");
-  }
-}
-
-function renderRecents() {
-  var el = document.getElementById("recents"); var h = "";
-  for (var i = 0; i < recents.length; i++)
-    h += '<div class="chip" onclick="document.getElementById(\'ticker\').value=\'' + recents[i] + '\';pullFiling()">' + recents[i] + '</div>';
-  el.innerHTML = h;
-}
-function log(msg, cls) {
-  var el = document.getElementById("log");
-  var colors = {ok:"#00e676",err:"#ff4081",info:"#7c4dff",warn:"#fdd835"};
-  var t = new Date().toTimeString().slice(0, 8);
-  el.innerHTML += '<span style="color:' + (colors[cls] || "#556") + '">' + t + "  " + msg + "</span>\n";
-  el.scrollTop = el.scrollHeight;
-}
-
-// ═══ UI ═══
 function runDCFUI() {
-  if (!currentFins) return;
-  try {
-  var p = parseFloat(document.getElementById("price").value);
-  var s = parseFloat(document.getElementById("shares").value);
-  if (!p || !s || p <= 0 || s <= 0) { document.getElementById("parseStatus").className = "st err"; document.getElementById("parseStatus").textContent = "Enter price and shares"; return; }
-  var secVal = document.getElementById("sector").value;
-  var sec = secVal === "auto" ? (currentFins._sector || "general") : secVal;
-  var r = runDcf(currentFins, p, s, sec);
-  if (r.error) { document.getElementById("parseStatus").className = "st err"; document.getElementById("parseStatus").textContent = r.error; return; }
-  currentResult = r;
-  var vc = verdictColor(r.verdict);
-  document.getElementById("verdictBanner").style.background = vc + "08";
-  document.getElementById("verdictBanner").style.border = "1px solid " + vc + "33";
-  document.getElementById("verdictText").textContent = r.verdict;
+  if (!currentFins) { log("No filing loaded","err"); return; }
+  var price = parseFloat(document.getElementById("price").value);
+  var shares = parseFloat(document.getElementById("shares").value);
+  if (!price || price <= 0) { log("Enter price","err"); return; }
+  if (!shares || shares <= 0) { log("Enter shares","err"); return; }
+
+  var sectorSel = document.getElementById("sector").value;
+  var sector = sectorSel === "auto" ? (currentFins._sector || "general") : sectorSel;
+  var beta = BETAS[sector] || 1.0;
+
+  var result = runDcf(currentFins, price, shares, sector, beta);
+  if (result.error) { log("DCF Error: " + result.error, "err"); return; }
+  currentResult = result;
+
+  // Verdict banner
+  var vc = verdictColor(result.verdict);
+  document.getElementById("verdictBanner").style.background = "linear-gradient(135deg, " + vc + "12, " + vc + "06)";
+  document.getElementById("verdictBanner").style.border = "1px solid " + vc + "44";
+  document.getElementById("verdictText").textContent = result.verdict;
   document.getElementById("verdictText").style.color = vc;
-  document.getElementById("fvVal").textContent = "$" + r.pw_fv.toFixed(2);
-  document.getElementById("priceVal").textContent = "$" + p.toFixed(2);
-  document.getElementById("upVal").textContent = (r.pw_up > 0 ? "+" : "") + r.pw_up.toFixed(1) + "%";
-  document.getElementById("upVal").style.color = r.pw_up > 0 ? "#00e676" : "#ff5252";
-  document.getElementById("bbmFlag").className = r.is_buyback_machine ? "" : "hide";
-  
-  // Summary tab
-  var sh = "";
-  sh += mkRow("WACC", pct(r.wacc));
-  sh += mkRow("Trailing Rev Growth", r.trailing_growth != null ? pct(r.trailing_growth) : "\u2014", r.trailing_growth > 0 ? "#00e676" : "#ff5252");
-  sh += mkRow("Implied FCF CAGR", r.implied_fcf_growth != null ? pct(r.implied_fcf_growth) : ">80%", r.implied_fcf_growth > 0.25 ? "#fdd835" : "#66bb6a");
-  sh += mkRow("Implied Rev CAGR", r.implied_rev_growth != null ? pct(r.implied_rev_growth) : ">80%");
-  var inp = r.inputs || {};
-  if (inp.capex_method && inp.capex_method !== "\u2014") sh += mkRow("CapEx Model", inp.capex_method, "#556");
-  if (r.sbc_haircut > 0) sh += mkRow("SBC Haircut", fmt(r.sbc_haircut), "#fdd835");
-  sh += '<div style="font-size:10px;color:#445;margin-top:8px">Sector: ' + (SECTOR_NAMES[sec] || sec) + ' | ' + currentFins._form + '</div>';
-  for (var fi = 0; fi < (r.sanity_flags || []).length; fi++) sh += '<div class="flag">\u26A0 ' + r.sanity_flags[fi] + '</div>';
-  document.getElementById("tab-summary").innerHTML = sh;
-  
-  // Scenarios tab
-  var sc = "";
-  for (var si = 0; si < r.scenarios.length; si++) {
-    var ss = r.scenarios[si];
-    var uc = ss.upside > 0 ? "#00e676" : ss.upside > -10 ? "#fdd835" : "#ff5252";
-    sc += '<div class="sr"><div><div style="font-size:12px">' + ss.name + '</div><div style="font-size:10px;color:#556">' + Math.round(ss.prob * 100) + '% weight</div></div><div style="text-align:right"><div style="font-size:13px;font-weight:600">$' + ss.fv.toFixed(2) + '</div><div style="font-size:11px;color:' + uc + '">' + (ss.upside > 0 ? "+" : "") + ss.upside.toFixed(1) + '%</div></div></div>';
-  }
-  document.getElementById("tab-scenarios").innerHTML = sc;
-  
-  // Financials tab
-  var fi2 = "";
-  var items = [["Revenue",currentFins.revenue],["Net Income",currentFins.net_income],["Op Income",currentFins.operating_income],["Op CF",currentFins.operating_cf],["CapEx",currentFins.capex],["D&A",currentFins.depreciation],["FCF (reported)",inp.fcf_reported],["FCF (used)",inp.fcf],["EBITDA",inp.ebitda],["Cash",currentFins.cash],["LT Debt",currentFins.long_term_debt],["Equity",currentFins.stockholders_equity],["EPS",currentFins.eps_diluted]];
-  for (var ii = 0; ii < items.length; ii++) {
-    if (items[ii][1] == null) continue;
-    fi2 += mkRow(items[ii][0], items[ii][0] === "EPS" ? "$" + items[ii][1].toFixed(2) : fmt(items[ii][1]));
-  }
-  fi2 += '<div style="margin-top:8px;font-size:10px;color:#445">Scale: ' + (currentFins._scale || 1000).toLocaleString() + ' | Tables: ' + currentFins._tables + ' | Shares: ' + s.toFixed(1) + 'M</div>';
-  document.getElementById("tab-financials").innerHTML = fi2;
+  document.getElementById("fvVal").textContent = "$" + result.pw_fv.toFixed(2);
+  document.getElementById("fvVal").style.color = vc;
+  document.getElementById("priceVal").textContent = "$" + price.toFixed(2);
+  document.getElementById("upVal").textContent = (result.pw_up > 0 ? "+" : "") + result.pw_up.toFixed(1) + "%";
+  document.getElementById("upVal").style.color = vc;
+  document.getElementById("bbmFlag").className = result.is_buyback_machine ? "" : "hide";
   document.getElementById("results").className = "";
+
+  // Render tabs
+  renderSummary(result, sector);
+  renderScenarios(result);
+  renderFinancials(result);
+  renderBeyond(result, sector);
   showTab("summary", document.querySelector(".tabs button"));
-  } catch(e) { log("DCF Error: " + e.message, "err"); console.error(e); }
+
+  // Chart
+  if (result.price_paths && result.price_paths.pw_path && result.price_paths.pw_path.length > 1) {
+    document.getElementById("chartCanvas").className = "";
+    drawChart(result.price_paths);
+  } else {
+    document.getElementById("chartCanvas").className = "hide";
+  }
 }
 
-function mkRow(k, v, c) { return '<div class="dr"><span class="k">' + k + '</span><span class="v" style="color:' + (c || "var(--text)") + '">' + v + '</span></div>'; }
 function showTab(name, btn) {
-  var tabs = ["summary", "scenarios", "financials"];
-  for (var i = 0; i < tabs.length; i++) document.getElementById("tab-" + tabs[i]).className = tabs[i] === name ? "card" : "card hide";
+  var tabs = ["summary","scenarios","financials","beyond"];
+  for (var i = 0; i < tabs.length; i++) {
+    document.getElementById("tab-"+tabs[i]).className = tabs[i] === name ? "card" : "card hide";
+  }
   var btns = document.querySelectorAll(".tabs button");
   for (var i = 0; i < btns.length; i++) btns[i].className = btns[i] === btn ? "act" : "";
+  if (btn) btn.className = "act";
 }
-// verdictColor already defined above
+
+function dr(k, v, color) { return '<div class="dr"><span class="k">'+k+'</span><span class="v" style="color:'+(color||"#c8ccd4")+'">'+v+'</span></div>'; }
+function sect(title) { return '<div class="sect">'+title+'</div>'; }
+
+function renderSummary(r, sector) {
+  var h = "";
+  h += dr("WACC", (r.wacc*100).toFixed(2)+"%");
+  if (r.trailing_growth != null) h += dr("Trailing Growth", pct(r.trailing_growth), r.trailing_growth > 0 ? "#00e676" : "#ff5252");
+  if (r.implied_fcf_growth != null) h += dr("Implied FCF CAGR", pct(r.implied_fcf_growth), r.implied_fcf_growth > 0.15 ? "#fdd835" : "#c8ccd4");
+  if (r.implied_rev_growth != null) h += dr("Implied Rev CAGR", pct(r.implied_rev_growth), r.implied_rev_growth > 0.20 ? "#fdd835" : "#c8ccd4");
+  h += dr("Sector", SECTOR_NAMES[sector] || sector);
+  var inp = r.inputs||{};
+  if (inp.capex_method) h += dr("FCF Method", inp.capex_method);
+  if (inp.hybrid_weights) h += dr("Hybrid Weights", inp.hybrid_weights + " (FCF/Rev)");
+  if (r.sbc_haircut > 0) h += dr("SBC Haircut", fmt(r.sbc_haircut), "#fdd835");
+  // Sanity flags
+  if (r.sanity_flags && r.sanity_flags.length) {
+    h += sect("Flags");
+    for (var i = 0; i < r.sanity_flags.length; i++)
+      h += '<div class="flag">\u26A0 '+r.sanity_flags[i]+'</div>';
+  }
+  document.getElementById("tab-summary").innerHTML = h;
+}
+
+function renderScenarios(r) {
+  var h = "";
+  for (var i = 0; i < r.scenarios.length; i++) {
+    var s = r.scenarios[i];
+    var uc = s.upside > 10 ? "#00e676" : s.upside > -10 ? "#fdd835" : "#ff5252";
+    h += '<div class="sr"><div><span style="font-size:13px">'+s.name+'</span><br><span style="font-size:10px;color:#556">'+Math.round(s.prob*100)+'% prob</span></div>';
+    h += '<div style="text-align:right"><span style="font-size:14px;font-weight:700">$'+s.fv.toFixed(2)+'</span><br><span style="font-size:11px;color:'+uc+'">'+(s.upside>0?"+":"")+s.upside.toFixed(1)+'%</span></div></div>';
+  }
+  document.getElementById("tab-scenarios").innerHTML = h;
+}
+
+function renderFinancials(r) {
+  var inp = r.inputs||{};
+  var h = sect("Income");
+  h += dr("Revenue", fmt(inp.revenue));
+  h += dr("Net Income", fmt(inp.net_income));
+  if (inp.cash_ni && inp.cash_ni !== inp.net_income) h += dr("Cash NI (NI+amort)", fmt(inp.cash_ni));
+  h += dr("EBITDA", fmt(inp.ebitda));
+  h += sect("Cash Flow");
+  h += dr("Operating CF", fmt(inp.operating_cf));
+  h += dr("CapEx", fmt(inp.capex));
+  h += dr("FCF (reported)", fmt(inp.fcf_reported));
+  h += dr("FCF (model input)", fmt(inp.fcf), "#00e5ff");
+  if (inp.amort_intangible) h += dr("Intangible Amort", fmt(inp.amort_intangible));
+  if (inp.sbc) h += dr("SBC", fmt(inp.sbc));
+  if (inp.wc_adjustment) h += dr("WC Adjustment", fmt(inp.wc_adjustment));
+  h += sect("Balance Sheet");
+  h += dr("Cash", fmt(inp.cash));
+  h += dr("Debt", fmt(inp.debt));
+  h += dr("Equity", fmt(inp.equity));
+  h += dr("Shares", (inp.shares/1e6).toFixed(1)+"M");
+  if (inp.nav_per_share) h += dr("NAV/Share", "$"+inp.nav_per_share.toFixed(2));
+  document.getElementById("tab-financials").innerHTML = h;
+}
+
+function renderBeyond(r, sector) {
+  var h = "";
+  // Market Implies
+  var mi = r.market_implies;
+  if (mi) {
+    h += sect("Market Implies");
+    h += dr("Implied Rev CAGR", typeof mi.implied_rev_cagr === "string" ? mi.implied_rev_cagr : mi.implied_rev_cagr.toFixed(1)+"%", mi.implied_rev_cagr > 20 ? "#fdd835" : "#c8ccd4");
+    h += dr("Current P/S", mi.implied_ps_now+"x");
+    h += dr("Terminal Margin", mi.assumed_margin+"%");
+  }
+  // Asset Floor
+  var af = r.asset_floor;
+  if (af) {
+    h += sect("Asset Floor");
+    h += dr("Book Value/Share", "$"+af.book_per_share.toFixed(2));
+    h += dr("Tangible Floor", "$"+af.tangible_floor.toFixed(2));
+    if (af.book_to_price != null) h += dr("Book/Price", af.book_to_price.toFixed(0)+"%", af.book_to_price > 80 ? "#00e676" : "#556");
+  }
+  // EV/Revenue
+  var evr = r.ev_rev_multiple;
+  if (evr) {
+    h += sect("EV / Revenue");
+    var pc = evr.premium_pct;
+    h += dr("Current EV/Rev", evr.current.toFixed(1)+"x", pc > 100 ? "#fdd835" : pc > 200 ? "#ff5252" : pc < 0 ? "#00e676" : "#c8ccd4");
+    h += dr("Sector Median", evr.sector_median+"x");
+    h += dr("Premium/Discount", (pc>0?"+":"")+pc.toFixed(0)+"%");
+    if (evr.at_median_price) h += dr("Price at Median", "$"+evr.at_median_price.toFixed(2));
+  }
+  // Comps
+  var cc = r.comps_check;
+  if (cc) {
+    h += sect("Comparables");
+    if (cc.current_pe) h += dr("P/E", cc.current_pe+"x (sector "+cc.sector_pe+"x) \u2192 $"+cc.pe_fv.toFixed(0));
+    if (cc.evebitda_fv) h += dr("EV/EBITDA", "sector "+cc.sector_evebitda+"x \u2192 $"+cc.evebitda_fv.toFixed(0));
+  }
+  // 10-Year Projection
+  var pp = r.price_paths;
+  if (pp && pp.pw_path && pp.pw_path.length > 1) {
+    h += sect("10-Year Intrinsic Value");
+    var pw = pp.pw_path;
+    var years = [1,3,5,7,10];
+    for (var yi = 0; yi < years.length; yi++) {
+      var yr = years[yi];
+      if (yr < pw.length) {
+        var cagr = pw[0] > 0 && pw[yr] > 0 ? Math.pow(pw[yr]/pw[0], 1/yr) - 1 : 0;
+        var cc2 = cagr > 0.05 ? "#00e676" : cagr > 0 ? "#fdd835" : "#ff5252";
+        h += dr("Y"+yr, "$"+pw[yr].toFixed(2) + "  ("+(cagr>=0?"+":"")+(cagr*100).toFixed(1)+"%/yr)", cc2);
+      }
+    }
+  }
+  if (!h) h = '<div style="color:#556;text-align:center;padding:20px">No beyond-DCF data available</div>';
+  document.getElementById("tab-beyond").innerHTML = h;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 10-YEAR PROJECTION CHART (Canvas)
+// ═══════════════════════════════════════════════════════════
+
+function drawChart(pp) {
+  var canvas = document.getElementById("chartCanvas");
+  var dpr = window.devicePixelRatio || 1;
+  var W = canvas.clientWidth || 500;
+  var H = 220;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.height = H + "px";
+  var ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  var padL=55, padR=15, padT=28, padB=28;
+  var pw = pp.pw_path;
+  if (!pw || pw.length < 2) return;
+
+  // Build upper/lower bounds from scenarios
+  var scenPaths = pp.scenarios.map(function(s){return s.path});
+  var upper=[], lower=[], innerU=[], innerL=[];
+  for (var yr=0; yr<=10; yr++) {
+    var vals = scenPaths.map(function(p){return p[yr]||0});
+    upper.push(Math.max.apply(null, vals));
+    lower.push(Math.min.apply(null, vals));
+    // Inner band (weighted variance)
+    var pwVal = pw[yr];
+    var variance = 0;
+    for (var si=0; si<pp.scenarios.length; si++) {
+      var sv = scenPaths[si][yr]||0, sp = pp.scenarios[si].prob||0.2;
+      variance += sp * Math.pow(sv - pwVal, 2);
+    }
+    var sigma = Math.max(Math.sqrt(variance), pwVal * 0.02);
+    innerU.push(pwVal + sigma);
+    innerL.push(Math.max(pwVal - sigma, pwVal * 0.1));
+  }
+
+  var allVals = upper.concat(lower).concat(pw);
+  var mktPrice = pp.market_price || 0;
+  if (mktPrice > 0) allVals.push(mktPrice);
+  var allPos = allVals.filter(function(v){return v>0});
+  if (!allPos.length) return;
+  var yMin = Math.min.apply(null, allPos) * 0.85;
+  var yMax = Math.max.apply(null, allPos) * 1.10;
+  if (yMax <= yMin) yMax = yMin * 2;
+  var useLog = (yMax / yMin) > 4;
+
+  function tx(yr) { return padL + (yr/10) * (W - padL - padR); }
+  function ty(val) {
+    if (val <= 0) val = yMin;
+    if (useLog) return padT + (1 - (Math.log(Math.max(val,yMin)) - Math.log(yMin)) / (Math.log(yMax) - Math.log(yMin))) * (H - padT - padB);
+    return padT + (1 - (val - yMin) / (yMax - yMin)) * (H - padT - padB);
+  }
+
+  // Background
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = "#1a1a2e"; ctx.lineWidth = 0.5; ctx.setLineDash([2,4]);
+  for (var i=0; i<5; i++) {
+    var y = padT + i * (H-padT-padB)/4;
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    var val = useLog ? Math.exp(Math.log(yMax) - i*(Math.log(yMax)-Math.log(yMin))/4) : yMax - i*(yMax-yMin)/4;
+    ctx.fillStyle = "#556"; ctx.font = "7px monospace"; ctx.textAlign = "right";
+    ctx.fillText("$"+Math.round(val).toLocaleString(), padL-4, y+3);
+  }
+  ctx.setLineDash([]);
+
+  // Year labels
+  ctx.fillStyle = "#556"; ctx.font = "7px monospace"; ctx.textAlign = "center";
+  for (var yr=0; yr<=10; yr+=2) ctx.fillText("Y"+yr, tx(yr), H-padB+14);
+
+  // Outer cone
+  ctx.fillStyle = "rgba(10,26,42,0.5)";
+  ctx.beginPath();
+  for (var yr=0; yr<=10; yr++) ctx.lineTo(tx(yr), ty(upper[yr]));
+  for (var yr=10; yr>=0; yr--) ctx.lineTo(tx(yr), ty(lower[yr]));
+  ctx.closePath(); ctx.fill();
+
+  // Inner cone
+  ctx.fillStyle = "rgba(13,42,42,0.6)";
+  ctx.beginPath();
+  for (var yr=0; yr<=10; yr++) ctx.lineTo(tx(yr), ty(innerU[yr]));
+  for (var yr=10; yr>=0; yr--) ctx.lineTo(tx(yr), ty(innerL[yr]));
+  ctx.closePath(); ctx.fill();
+
+  // Cone edges (dashed)
+  ctx.setLineDash([3,5]); ctx.lineWidth = 1;
+  ctx.strokeStyle = "#1a4a3a"; ctx.beginPath();
+  for (var yr=0; yr<=10; yr++) { yr===0?ctx.moveTo(tx(yr),ty(upper[yr])):ctx.lineTo(tx(yr),ty(upper[yr])); }
+  ctx.stroke();
+  ctx.strokeStyle = "#4a1a2a"; ctx.beginPath();
+  for (var yr=0; yr<=10; yr++) { yr===0?ctx.moveTo(tx(yr),ty(lower[yr])):ctx.lineTo(tx(yr),ty(lower[yr])); }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // PW intrinsic value line
+  ctx.strokeStyle = "#00e5ff"; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (var yr=0; yr<=10; yr++) { yr===0?ctx.moveTo(tx(yr),ty(pw[yr])):ctx.lineTo(tx(yr),ty(pw[yr])); }
+  ctx.stroke();
+
+  // Market price line
+  if (mktPrice > 0 && mktPrice >= yMin && mktPrice <= yMax * 1.1) {
+    var my = ty(mktPrice);
+    ctx.setLineDash([4,4]); ctx.strokeStyle = "#ff4081"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL,my); ctx.lineTo(W-padR,my); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#ff4081"; ctx.font = "bold 7px monospace"; ctx.textAlign = "right";
+    ctx.fillText("Mkt $"+Math.round(mktPrice).toLocaleString(), W-padR-3, my-5);
+  }
+
+  // Y0 dot
+  ctx.fillStyle = "#00e5ff";
+  ctx.beginPath(); ctx.arc(tx(0), ty(pw[0]), 4, 0, Math.PI*2); ctx.fill();
+  ctx.font = "bold 8px monospace"; ctx.textAlign = "left";
+  ctx.fillText("$"+Math.round(pw[0]).toLocaleString(), tx(0)+8, ty(pw[0])-6);
+
+  // Y10 dot
+  if (pw.length > 10) {
+    ctx.beginPath(); ctx.arc(tx(10), ty(pw[10]), 4, 0, Math.PI*2); ctx.fill();
+    ctx.textAlign = "right";
+    ctx.fillText("$"+Math.round(pw[10]).toLocaleString(), tx(10)-8, ty(pw[10])-6);
+  }
+
+  // Y10 range labels
+  if (upper.length > 10 && lower.length > 10) {
+    ctx.font = "6px monospace";
+    ctx.fillStyle = "#1a6a4a"; ctx.textAlign = "left";
+    ctx.fillText("$"+Math.round(upper[10]).toLocaleString(), W-padR+2, ty(upper[10])+3);
+    ctx.fillStyle = "#6a1a2a";
+    ctx.fillText("$"+Math.round(lower[10]).toLocaleString(), W-padR+2, ty(lower[10])+3);
+  }
+
+  // Title
+  ctx.fillStyle = "#7c4dff"; ctx.font = "bold 9px monospace"; ctx.textAlign = "center";
+  ctx.fillText("INTRINSIC VALUE  \u00B7  10Y PROJECTION", W/2, 10);
+
+  // Legend
+  ctx.font = "bold 7px monospace"; ctx.textAlign = "left";
+  ctx.fillStyle = "#00e5ff"; ctx.fillText("\u2501 Intrinsic Value", padL+4, padT-8);
+  ctx.fillStyle = "#1a4a3a"; ctx.fillText("\u2591 Uncertainty", padL+110, padT-8);
+  ctx.fillStyle = "#ff4081"; ctx.fillText("\u254C Market", padL+195, padT-8);
+}
 
 </script>
 </body>
